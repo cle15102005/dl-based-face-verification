@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 env/
+bio_venv/
 
 # 2. IDEs & Editors
 .vscode/

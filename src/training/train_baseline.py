@@ -1,106 +1,138 @@
-import os
+"""
+Baseline Siamese Network training with Contrastive Loss.
+
+Train/Val: merged CALFW + CPLFW eval pairs (80/20 split).
+Test:     LFW eval pairs only (via evaluate_lfw.py).
+
+Usage:
+    python scripts/train_baseline.py --config configs/baseline_s.yaml
+"""
+
+import argparse
+import gc
+import sys
 import time
+from pathlib import Path
+
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import gc
+from tqdm import tqdm
 
-# Import local modules
-from src.data.dataset import LFWPairsDataset
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.data.dataset import VerificationPairsDataset, load_calfw_cplfw_train_val
 from src.models.backbone import EfficientNetV2Backbone
-from src.models.siamese import SiameseNetwork
 from src.models.losses import ContrastiveLoss
+from src.models.siamese import SiameseNetwork
+from src.training.train_utils import EarlyStopping, evaluate_val_eer, resolve_project_path
+from src.utils.config import load_config
+from src.utils.paths import CHECKPOINTS_DIR, ensure_output_dirs
 
-def train_baselines():
-    # 1. Setup device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"[INFO] Starting training on device: {device}")
-    if torch.cuda.is_available():
-        print(f"[INFO] GPU Name: {torch.cuda.get_device_name(0)}")
 
-    # Create checkpoints directory
-    os.makedirs('outputs/checkpoints', exist_ok=True)
+def train_baseline(config_path):
+    config = load_config(config_path)
+    ensure_output_dirs()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Training baseline on device: {device}")
 
-    # 2. Configuration (Variant, Batch Size)
-    configs = [
-        ('s', 16),
-        ('m', 8), 
-        ('l', 4)  
-    ]
-    
-    num_epochs = 10
-    learning_rate = 1e-4
-    
-    # Data paths
-    pairs_file = 'src/data/data/raw/pairs.csv' 
-    processed_dir = 'src/data/data/processed'
+    processed_dir = resolve_project_path(PROJECT_ROOT, config["processed_data_dir"])
+    variant = config["variant"]
+    batch_size = config["batch_size"]
 
-    for variant, batch_size in configs:
-        print(f"\n{'='*60}")
-        print(f"[INFO] TRAINING START: EfficientNetV2-{variant.upper()} | Batch Size: {batch_size}")
-        print(f"{'='*60}")
+    train_entries, val_entries = load_calfw_cplfw_train_val(
+        train_ratio=config["train_val_split"],
+        seed=config["split_seed"],
+    )
 
-        # 3. Initialize Dataset and DataLoader
-        try:
-            train_dataset = LFWPairsDataset(
-                pairs_csv_path=pairs_file,
-                processed_data_dir=processed_dir,
-                img_size=variant
-            )
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-            print(f"[INFO] Successfully loaded {len(train_dataset)} pairs from LFW.")
-        except Exception as e:
-            print(f"[ERROR] Failed to load data for variant {variant}: {e}")
-            continue
+    train_dataset = VerificationPairsDataset(
+        pair_entries=train_entries,
+        variant=variant,
+        processed_root=processed_dir,
+    )
+    val_dataset = VerificationPairsDataset(
+        pair_entries=val_entries,
+        variant=variant,
+        processed_root=processed_dir,
+    )
 
-        # 4. Initialize Model, Loss, Optimizer
-        print("[INFO] Loading weights and moving model to GPU...")
-        backbone = EfficientNetV2Backbone(variant=variant)
-        model = SiameseNetwork(backbone).to(device)
-        
-        criterion = ContrastiveLoss(margin=1.0)
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-        # 5. Training Loop
+    backbone = EfficientNetV2Backbone(
+        variant=variant,
+        unfreeze_ratio=config["unfreeze_ratio"],
+        dropout=config["dropout"],
+    )
+    model = SiameseNetwork(backbone).to(device)
+    criterion = ContrastiveLoss(margin=config["contrastive_margin"])
+    optimizer = optim.AdamW(
+        model.parameters(),
+        lr=config["learning_rate"],
+        weight_decay=config["weight_decay"],
+    )
+
+    early_stopping = EarlyStopping(patience=config["early_stopping_patience"])
+    checkpoint_path = CHECKPOINTS_DIR / f"{config['checkpoint_name']}.pt"
+    best_eer = float("inf")
+
+    epochs = config["epochs"]
+    for epoch in range(epochs):
         model.train()
-        for epoch in range(num_epochs):
-            start_time = time.time()
-            total_loss = 0.0
-            
-            for batch_idx, (img1, img2, labels) in enumerate(train_loader):
-                # Move data to GPU
-                img1, img2, labels = img1.to(device), img2.to(device), labels.to(device)
+        start_time = time.time()
+        total_loss = 0.0
 
-                # Zero gradients
-                optimizer.zero_grad()
+        train_pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch + 1}/{epochs} [Train]",
+            unit="batch",
+            leave=False,
+        )
+        for img1, img2, labels in train_pbar:
+            img1, img2, labels = img1.to(device), img2.to(device), labels.to(device)
+            optimizer.zero_grad()
+            emb_a, emb_b, _ = model(img1, img2)
+            loss = criterion(emb_a, emb_b, labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            train_pbar.set_postfix(loss=f"{loss.item():.4f}", refresh=False)
 
-                # Forward pass
-                emb_a, emb_b, cos_sim = model(img1, img2)
+        avg_loss = total_loss / max(len(train_loader), 1)
+        val_eer = evaluate_val_eer(
+            model,
+            val_loader,
+            device,
+            use_siamese=True,
+            progress_desc=f"Epoch {epoch + 1}/{epochs} [Val]",
+        )
+        epoch_time = time.time() - start_time
+        print(
+            f"[INFO] Epoch [{epoch + 1:02d}/{epochs}] | "
+            f"Loss: {avg_loss:.4f} | Val EER: {val_eer:.4f} | Time: {epoch_time:.1f}s"
+        )
 
-                # Compute loss
-                loss = criterion(emb_a, emb_b, labels)
+        improved = early_stopping.step(val_eer)
+        if improved:
+            best_eer = val_eer
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"[INFO] Saved best checkpoint (EER={best_eer:.4f}) -> {checkpoint_path}")
 
-                # Backward pass and optimize
-                loss.backward()
-                optimizer.step()
+        if early_stopping.should_stop:
+            print(f"[INFO] Early stopping triggered after {epoch + 1} epochs.")
+            break
 
-                total_loss += loss.item()
+    print(f"[INFO] Baseline training complete. Best Val EER: {best_eer:.4f}")
 
-            # Log epoch results
-            avg_loss = total_loss / len(train_loader)
-            epoch_time = time.time() - start_time
-            print(f"[INFO] Epoch [{epoch+1:02d}/{num_epochs}] | Loss: {avg_loss:.4f} | Time: {epoch_time:.1f}s")
+    del model, backbone, optimizer, train_loader, val_loader
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-        # 6. Save Checkpoint
-        save_path = f'outputs/checkpoints/baseline_{variant}.pt'
-        torch.save(model.state_dict(), save_path)
-        print(f"[INFO] Weights successfully saved at: {save_path}")
-
-        # 7. Clear GPU memory before next variant
-        del model, backbone, optimizer, train_loader, train_dataset
-        gc.collect() 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache() 
 
 if __name__ == "__main__":
-    train_baselines()
+    parser = argparse.ArgumentParser(description="Train baseline Siamese model with contrastive loss.")
+    parser.add_argument("--config", required=True, help="Path to YAML config file.")
+    args = parser.parse_args()
+    train_baseline(args.config)

@@ -1,21 +1,29 @@
-# Applying EfficientNetV2 Variants for Face Verification
+# Deep Learning-Based Face Verification
 
-An advanced face verification system built with PyTorch, comparing EfficientNetV2 variants (Small, Medium, Large) using Additive Angular Margin Loss (ArcFace) and Online Hard Pair Mining. Evaluated on the standard LFW 6,000-pair benchmark.
+Face verification system using **InceptionResnetV1** backbone with two training paradigms:
+- **Baseline**: Siamese Network + Cosine Pair Loss
+- **ArcFace**: Single-branch + Additive Angular Margin Loss
+
+Evaluated on the standard LFW 6,000-pair benchmark.
 
 ## Team Members (Group 8)
 
-* **Le Viet Cuong** - Project Manager, Eval & Pipeline Setup
-* **Hoang Quoc Huy** - Data Engineer (MTCNN & Hard Miner)
-* **Dinh Ha Hai** - ML Engineer (Baseline Siamese Network)
-* **Nguyen Ngoc Linh** - ML Engineer (ArcFace & Demo)
+| Name | Role |
+|---|---|
+| Le Viet Cuong | Project Manager, Eval & Pipeline |
+| Hoang Quoc Huy | Data Engineer (MTCNN preprocessing) |
+| Dinh Ha Hai | ML Engineer (Baseline Siamese Network) |
+| Nguyen Ngoc Linh | ML Engineer (ArcFace & Demo) |
+
+---
 
 ## Data Protocol
 
-| Split | Dataset | Role | Augmentation |
-|---|---|---|---|
-| **Train** | CASIA-WebFace | ~10k identities, metric-learning pre-training | None |
-| **Val** | CALFW + CPLFW | 12,000 official eval pairs combined | None |
-| **Test** | LFW | 6,000 official eval pairs (held-out) | Horizontal-flip TTA only |
+| Split | Dataset | Role |
+|---|---|---|
+| **Train** | CASIA-WebFace | 5,000 identities × 30 images — identity classification |
+| **Val** | CALFW + CPLFW | 12,000 official eval pairs — early stopping |
+| **Test** | LFW | 6,000 official eval pairs — final benchmark (held-out) |
 
 ```
 archive/casia-webface/          # MXNet RecordIO (train.rec, train.idx, train.lst)
@@ -23,113 +31,127 @@ data/raw/lfw/                   # LFW deepfunneled + pairs.csv
 data/raw/calfw/calfw/           # CALFW images + pairs.csv
 data/raw/cplfw/cplfw/           # CPLFW images + pairs.csv
 data/processed/
-  casia-webface/{S,M,L}/        # Extracted training crops
-  lfw/{S,M,L}/                  # MTCNN-aligned test crops
-  calfw/{S,M,L}/                # MTCNN-aligned val crops
-  cplfw/{S,M,L}/                # MTCNN-aligned val crops
+  casia-webface/I/              # 160px face crops for training
+  lfw/I/                        # 160px MTCNN-aligned test crops
+  calfw/I/                      # 160px MTCNN-aligned val crops
+  cplfw/I/                      # 160px MTCNN-aligned val crops
+outputs/
+  checkpoints/arcface.pt        # Trained ArcFace model
+  checkpoints/baseline.pt       # Trained Baseline model
+  metrics/                      # ROC curves, FAR/FRR plots, comparison table
 ```
 
 ---
 
 ## Environment Setup
 
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
+```bash
+python -m venv bio_venv
+source bio_venv/bin/activate        # Linux/WSL
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
 ```
 
-Or run `.\setup.ps1` (then `pip install mxnet` if not already installed).
-
 ---
 
-## Step-by-Step Pipeline
-
-### Step 0 — Place datasets
-
-1. **CASIA-WebFace** is already in `archive/casia-webface/`.
-2. Download and extract **LFW**, **CALFW**, **CPLFW** into `data/raw/`:
-   - `data/raw/lfw/lfw-deepfunneled/` + `data/raw/lfw/pairs.csv`
-   - `data/raw/calfw/calfw/` + `pairs.csv`
-   - `data/raw/cplfw/cplfw/` + `pairs.csv`
+## Pipeline
 
 ### Step 1 — Extract CASIA-WebFace (training data)
 
-Decodes the `.rec` pack and saves resized JPGs for S/M/L variants:
+Decodes `.rec` pack and saves 160px face crops:
 
-```powershell
+```bash
 python scripts/extract_casia_webface.py
 ```
 
-Smoke test (first 1000 images):
-
-```powershell
-python scripts/extract_casia_webface.py --max-images 1000
-```
-
-Output: `data/processed/casia-webface/{S,M,L}/{identity_id}/*.jpg`
+Output: `data/processed/casia-webface/S/{identity_id}/*.jpg` (300px, before resize)
 
 ### Step 2 — MTCNN preprocess evaluation datasets
 
-Aligns faces in LFW / CALFW / CPLFW for validation and testing:
+Detects and aligns faces in LFW / CALFW / CPLFW:
 
-```powershell
+```bash
 python scripts/mtcnn_preprocess.py
 ```
 
-Output: `data/processed/{lfw,calfw,cplfw}/{S,M,L}/`
+Output: `data/processed/{lfw,calfw,cplfw}/S/`
 
-### Step 3 — Train baseline (Contrastive / Siamese)
+### Step 3 — Resize all crops to 160px
 
-```powershell
-python scripts/train_baseline.py --config configs/baseline_s.yaml
-python scripts/train_baseline.py --config configs/baseline_m.yaml
-python scripts/train_baseline.py --config configs/baseline_l.yaml
+Converts all 300px crops to 160px — only needs to run once:
+
+```bash
+python scripts/resize_to_160.py
+```
+
+Output: `data/processed/{lfw,calfw,cplfw,casia-webface}/I/`  
+After this step, the `S/` folders can be deleted.
+
+### Step 4a — Train Baseline (Siamese + CosinePairLoss)
+
+```bash
+python scripts/train_baseline.py --config configs/baseline.yaml
 ```
 
 - Trains on random CASIA-WebFace pairs
 - Validates on CALFW + CPLFW (early stopping on val EER)
-- Saves to `outputs/checkpoints/baseline_{s,m,l}.pt`
+- Saves to `outputs/checkpoints/baseline.pt`
 
-### Step 4 — Train ArcFace + Hard Mining
+### Step 4b — Train ArcFace
 
-```powershell
-python scripts/train_arcface.py --config configs/arcface_s.yaml
-python scripts/train_arcface.py --config configs/arcface_m.yaml
-python scripts/train_arcface.py --config configs/arcface_l.yaml
+```bash
+python scripts/train_arcface.py --config configs/arcface.yaml
 ```
 
-- Trains on CASIA-WebFace identities (ArcFace + optional hard mining)
+- Trains on CASIA-WebFace with PK batch sampling
+- Uses SGD + MultiStepLR scheduler + gradient clipping
 - Validates on CALFW + CPLFW
-- Saves to `outputs/checkpoints/arcface_{s,m,l}.pt`
+- Saves to `outputs/checkpoints/arcface.pt`
 
 ### Step 5 — Evaluate on LFW test set
 
-```powershell
+```bash
 python scripts/evaluate_lfw.py
 ```
 
-Runs all 6 models on LFW with horizontal-flip TTA (`lfw_test_augmentation: true` in configs).
+Runs both models on LFW with horizontal-flip TTA. Outputs EER, FAR@FRR1%, ROC curves.
 
-### Step 6 — Error analysis & demo
+### Step 6 — Error analysis
 
-```powershell
+```bash
 python scripts/error_analysis.py
-python demo/verify.py
 ```
 
 ---
 
+## Model Architecture
+
+```
+Input (160×160 RGB)
+  ↓  ImageNet-norm → [-1,1] conversion
+InceptionResnetV1 (pretrained: CASIA-WebFace)
+  ↓  512-d features
+Dropout(0.1)
+  ↓
+L2 Normalize  →  512-d unit embedding
+
+[Baseline]                    [ArcFace]
+SiameseNetwork                ArcFaceLoss head
+CosinePairLoss                (s=64, m=0.5)
+```
+
 ## Training Hyperparameters
 
-| Parameter | Value |
-|---|---|
-| Epochs | 30 |
-| Learning rate | 1e-4 |
-| Optimizer | AdamW |
-| Early stopping | on CALFW+CPLFW val EER |
-| ArcFace | s=64, m=0.5 |
-| Batch sizes | S=16, M=8, L=4 |
+| Parameter | Baseline | ArcFace |
+|---|---|---|
+| Backbone | InceptionResnetV1 | InceptionResnetV1 |
+| Pretrained | CASIA-WebFace | CASIA-WebFace |
+| Input size | 160px | 160px |
+| Epochs | 30 | 32 |
+| Optimizer | AdamW (lr=1e-4) | SGD (lr=1e-4 backbone, 1e-3 head) |
+| LR schedule | — | MultiStepLR [20, 28] ×0.1 |
+| Unfreeze ratio | 0.3 | 0.3 |
+| Batch size | 64 pairs | 32 (PK: 32 ids × 4 imgs) |
+| Early stopping | val EER (patience=8) | val EER (patience=10) |
 
-**Target:** EER < 5% on the LFW 6,000-pair benchmark.
+**Target:** ArcFace EER < 3% on LFW 6,000-pair benchmark.

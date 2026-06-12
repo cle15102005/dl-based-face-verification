@@ -1,10 +1,8 @@
 """
-CLI entry point: Baseline Siamese model training (Contrastive Loss).
+CLI entry point: Baseline Siamese model training (InceptionResnetV1 + CosinePairLoss).
 
 Step 3a — train on CASIA-WebFace, validate on CALFW+CPLFW:
-    python scripts/train_baseline.py --config configs/baseline_s.yaml
-    python scripts/train_baseline.py --config configs/baseline_m.yaml
-    python scripts/train_baseline.py --config configs/baseline_l.yaml
+    python scripts/train_baseline.py --config configs/baseline.yaml
 """
 
 import sys

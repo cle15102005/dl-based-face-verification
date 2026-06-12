@@ -1,0 +1,53 @@
+# ArcFace  —  InceptionResnetV1 + ArcFace Loss
+# Train: CASIA-WebFace identity images (PK batches)
+# Val  : CALFW + CPLFW eval pairs
+# Test : LFW only (evaluate_lfw.py)
+
+# --- Model identity ---
+variant: i                    # Uses data/processed/*/I/ folder (160px crops, pre-resized)
+backbone_type: inception      # InceptionResnetV1 — native 160px input, no in-forward resize
+loss_type: arcface
+checkpoint_name: arcface
+input_size: 160               # Matches backbone native input size
+
+# --- Data ---
+processed_data_dir: data/processed
+max_train_identities: 5000
+max_images_per_identity: 30
+split_seed: 42
+
+# --- Training loop ---
+epochs: 32
+batch_size: 32
+early_stopping_patience: 10
+
+# --- Optimizer: SGD + MultiStepLR ---
+backbone_lr: 1.0e-4
+arcface_lr: 1.0e-3
+weight_decay: 5.0e-4
+lr_milestones: [20, 28]
+lr_decay: 0.1
+
+# --- Backbone ---
+dropout: 0.1
+unfreeze_ratio: 0.3
+freeze_batchnorm: true
+
+# --- ArcFace loss ---
+arcface_scale: 64.0
+arcface_margin: 0.5
+
+# --- Hard pair mining (auxiliary loss alongside ArcFace) ---
+hard_mining_weight: 0.1   # Weight of HardPairContrastiveLoss relative to ArcFace loss
+
+# --- PK batch sampler ---
+p_identities: 32
+k_images: 4
+min_images: 2
+
+# --- Evaluation ---
+lfw_test_augmentation: true
+
+# --- DataLoader ---
+num_workers: 8
+prefetch_factor: 2

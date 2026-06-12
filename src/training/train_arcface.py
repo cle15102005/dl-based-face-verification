@@ -1,12 +1,22 @@
 """
-Advanced ArcFace + Hard Pair Mining training script.
+Pure ArcFace training script — follows the original paper exactly.
 
 Data protocol
 -------------
-  Train : CASIA-WebFace identities (ArcFace + in-batch hard mining)
-          + optional WebFace pair verification loss (verification_weight)
+  Train : CASIA-WebFace identities loaded with PK batch sampling
+          (pure ArcFace cross-entropy, NO auxiliary pair losses)
   Val   : CALFW + CPLFW merged eval pairs (early stopping on validation EER)
   Test  : LFW only (run scripts/evaluate_lfw.py after training)
+
+Optimizer
+---------
+  SGD with momentum=0.9, weight_decay=5e-4 (same as paper).
+  Two parameter groups with different initial LRs:
+    - ArcFace head (trained from scratch): arcface_lr (e.g. 0.01)
+    - Backbone unfrozen layers (pretrained): backbone_lr (e.g. 0.001)
+  MultiStepLR: divide both by lr_decay at each milestone epoch.
+
+Reference: Deng et al., ArcFace (2019) — CASIA settings (Section 4.1)
 
 Usage:
     python scripts/train_arcface.py --config configs/arcface_s.yaml
@@ -20,7 +30,7 @@ from pathlib import Path
 
 import torch
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -31,12 +41,12 @@ from src.data.dataset import (
     CasiaWebFaceIdentityDataset,
     PKBatchSampler,
     VerificationPairsDataset,
-    WebFacePairsDataset,
     load_validation_pairs,
 )
-from src.data.hard_pair_mining import HardPairMiner
-from src.models.backbone import EfficientNetV2Backbone
-from src.models.losses import ArcFaceLoss, CosinePairLoss, HardPairContrastiveLoss
+import torch.nn.functional as F
+
+from src.models.backbone import EfficientNetV2Backbone, InceptionResnetV1Backbone
+from src.models.losses import ArcFaceLoss, HardPairContrastiveLoss
 from src.training.train_utils import (
     EarlyStopping,
     dataloader_kwargs,
@@ -45,6 +55,31 @@ from src.training.train_utils import (
 )
 from src.utils.config import load_config
 from src.utils.paths import CHECKPOINTS_DIR, ensure_output_dirs
+
+
+def mine_hard_pairs(embeddings: torch.Tensor, labels: torch.Tensor):
+    """
+    For each sample in the batch, find the hardest positive (same identity,
+    lowest cosine similarity) and hardest negative (different identity,
+    highest cosine similarity).
+
+    Returns index tensors hard_pos_idx and hard_neg_idx, both shape [B].
+    """
+    with torch.no_grad():
+        emb = F.normalize(embeddings.detach(), p=2, dim=1)
+        sim = emb @ emb.T  # [B, B]
+        same = labels.unsqueeze(1) == labels.unsqueeze(0)  # [B, B]
+        eye = torch.eye(len(labels), device=labels.device, dtype=torch.bool)
+
+        # Hardest positive: same class, exclude self, pick min similarity
+        pos_sim = sim.masked_fill(~same | eye, float("inf"))
+        hard_pos = pos_sim.argmin(dim=1)
+
+        # Hardest negative: different class, pick max similarity
+        neg_sim = sim.masked_fill(same, float("-inf"))
+        hard_neg = neg_sim.argmax(dim=1)
+
+    return hard_pos, hard_neg
 
 
 def train_arcface(config_path):
@@ -58,8 +93,8 @@ def train_arcface(config_path):
     variant = config["variant"]
     batch_size = config["batch_size"]
     freeze_bn = config.get("freeze_batchnorm", True)
-    verification_weight = float(config.get("verification_weight", 0.2))
 
+    # --- Training data: CASIA-WebFace identities via PK sampler ---
     train_dataset = CasiaWebFaceIdentityDataset(
         variant=variant,
         processed_root=processed_dir,
@@ -76,23 +111,7 @@ def train_arcface(config_path):
         **loader_kwargs,
     )
 
-    pair_train_loader = None
-    pair_train_dataset = None
-    if verification_weight > 0:
-        pair_train_dataset = WebFacePairsDataset(
-            variant=variant,
-            processed_root=processed_dir,
-            num_pairs=config.get("webface_pairs_per_epoch", 10000),
-            seed=config["split_seed"] + 10,
-        )
-        pair_train_loader = DataLoader(
-            pair_train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=len(pair_train_dataset) > batch_size,
-            **loader_kwargs,
-        )
-
+    # --- Validation data: CALFW + CPLFW pairs ---
     val_entries = load_validation_pairs()
     val_dataset = VerificationPairsDataset(
         pair_entries=val_entries,
@@ -106,12 +125,20 @@ def train_arcface(config_path):
         **loader_kwargs,
     )
 
-    backbone = EfficientNetV2Backbone(
-        variant=variant,
-        unfreeze_ratio=config["unfreeze_ratio"],
-        dropout=config["dropout"],
-        embedding_dim=config.get("embedding_dim", 512),
-    ).to(device)
+    # --- Model ---
+    if config.get("backbone_type") == "inception":
+        backbone = InceptionResnetV1Backbone(
+            unfreeze_ratio=config["unfreeze_ratio"],
+            dropout=config["dropout"],
+            pretrained="casia-webface",
+        ).to(device)
+    else:
+        backbone = EfficientNetV2Backbone(
+            variant=variant,
+            unfreeze_ratio=config["unfreeze_ratio"],
+            dropout=config["dropout"],
+            embedding_dim=config.get("embedding_dim", 512),
+        ).to(device)
     backbone.set_train_mode(freeze_batchnorm=freeze_bn)
 
     num_classes = len(train_dataset.label_to_indices)
@@ -122,39 +149,38 @@ def train_arcface(config_path):
         m=config["arcface_margin"],
     ).to(device)
 
-    contrastive_loss = CosinePairLoss(
-        pos_threshold=config.get("cosine_pos_threshold", 0.5),
-        neg_threshold=config.get("cosine_neg_threshold", 0.0),
-    )
-    hard_miner = HardPairMiner()
-    hard_pair_loss = HardPairContrastiveLoss(margin=config["contrastive_margin"])
-    mining_weight = config["hard_mining_weight"] if config["mining_strategy"] == "hard" else 0.0
+    hard_mining_weight = config.get("hard_mining_weight", 0.1)
+    hard_loss_fn = HardPairContrastiveLoss(margin=1.0).to(device)
 
-    backbone_lr = config.get("backbone_lr", config["learning_rate"] * 0.5)
-    arcface_lr = config.get("arcface_lr", config["learning_rate"])
-    optimizer = optim.AdamW(
+    # --- Optimizer: SGD with two LR groups (paper: momentum=0.9, wd=5e-4) ---
+    backbone_lr = config.get("backbone_lr", 1e-3)
+    arcface_lr = config.get("arcface_lr", 1e-2)
+    optimizer = optim.SGD(
         [
             {"params": [p for p in backbone.parameters() if p.requires_grad], "lr": backbone_lr},
             {"params": arcface_loss.parameters(), "lr": arcface_lr},
         ],
+        momentum=0.9,
         weight_decay=config["weight_decay"],
     )
-    scheduler = CosineAnnealingLR(optimizer, T_max=config["epochs"], eta_min=backbone_lr * 0.1)
+
+    # MultiStepLR: divide LR by lr_decay at each milestone epoch (paper: ÷10 at 20, 28)
+    milestones = config.get("lr_milestones", [20, 28])
+    lr_decay = config.get("lr_decay", 0.1)
+    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=lr_decay)
 
     early_stopping = EarlyStopping(patience=config["early_stopping_patience"])
     checkpoint_path = CHECKPOINTS_DIR / f"{config['checkpoint_name']}.pt"
     best_eer = float("inf")
 
-    verify_msg = (
-        f"verify_weight={verification_weight}, "
-        f"pairs/epoch={len(pair_train_dataset)}"
-        if pair_train_dataset is not None
-        else "verify_weight=0 (disabled)"
-    )
     print(
         f"[INFO] ArcFace classes: {num_classes} | "
         f"Val pairs: {len(val_entries)} | "
-        f"Batches/epoch: {len(train_loader)} | {verify_msg}"
+        f"Batches/epoch: {len(train_loader)} | "
+        f"arcface_lr={arcface_lr}, backbone_lr={backbone_lr} | "
+        f"milestones={milestones}, decay={lr_decay} | "
+        f"s={config['arcface_scale']}, m={config['arcface_margin']} | "
+        f"hard_mining_weight={hard_mining_weight}"
     )
 
     epochs = config["epochs"]
@@ -164,63 +190,55 @@ def train_arcface(config_path):
 
         start_time = time.time()
         total_loss = 0.0
-        total_arcface = 0.0
-        total_verify = 0.0
         num_steps = 0
 
-        pair_iter = iter(pair_train_loader) if pair_train_loader is not None else None
         train_pbar = tqdm(
             train_loader,
             desc=f"Epoch {epoch + 1}/{epochs} [Train/WebFace]",
             unit="batch",
             leave=False,
         )
+        total_arcface_loss = 0.0
+        total_hard_loss = 0.0
+
         for images, labels in train_pbar:
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
 
             embeddings = backbone(images)
-            arcface_term = arcface_loss(embeddings, labels)
-            loss = arcface_term
 
-            if mining_weight > 0:
-                hard_pos_idx, hard_neg_idx = hard_miner(embeddings, labels)
-                loss = loss + mining_weight * hard_pair_loss(embeddings, hard_pos_idx, hard_neg_idx)
+            arc_loss = arcface_loss(embeddings, labels)
 
-            verify_term = torch.tensor(0.0, device=device)
-            if pair_iter is not None:
-                try:
-                    img1, img2, pair_labels = next(pair_iter)
-                except StopIteration:
-                    pair_iter = iter(pair_train_loader)
-                    img1, img2, pair_labels = next(pair_iter)
+            # Hard pair mining: hardest positive + hardest negative in PK batch
+            hard_pos_idx, hard_neg_idx = mine_hard_pairs(embeddings, labels)
+            hard_loss = hard_loss_fn(embeddings, hard_pos_idx, hard_neg_idx)
 
-                img1 = img1.to(device)
-                img2 = img2.to(device)
-                pair_labels = pair_labels.to(device)
-                emb_a = backbone(img1)
-                emb_b = backbone(img2)
-                verify_term = contrastive_loss(emb_a, emb_b, pair_labels)
-                loss = loss + verification_weight * verify_term
+            loss = arc_loss + hard_mining_weight * hard_loss
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in backbone.parameters() if p.requires_grad]
+                + list(arcface_loss.parameters()),
+                max_norm=5.0,
+            )
             optimizer.step()
 
             num_steps += 1
             total_loss += loss.item()
-            total_arcface += arcface_term.item()
-            total_verify += verify_term.item()
+            total_arcface_loss += arc_loss.item()
+            total_hard_loss += hard_loss.item()
             train_pbar.set_postfix(
-                arcface=f"{arcface_term.item():.2f}",
-                verify=f"{verify_term.item():.4f}",
+                arcface=f"{arc_loss.item():.4f}",
+                hard=f"{hard_loss.item():.4f}",
                 refresh=False,
             )
 
         scheduler.step()
 
         avg_loss = total_loss / max(num_steps, 1)
-        avg_arcface = total_arcface / max(num_steps, 1)
-        avg_verify = total_verify / max(num_steps, 1)
+        avg_arc = total_arcface_loss / max(num_steps, 1)
+        avg_hard = total_hard_loss / max(num_steps, 1)
+        current_lr = scheduler.get_last_lr()
 
         backbone.eval()
         val_eer, val_stats = evaluate_val_eer(
@@ -235,9 +253,10 @@ def train_arcface(config_path):
         epoch_time = time.time() - start_time
         print(
             f"[INFO] Epoch [{epoch + 1:02d}/{epochs}] | "
-            f"Loss: {avg_loss:.4f} (arcface={avg_arcface:.2f}, verify={avg_verify:.4f}) | "
+            f"Loss: {avg_loss:.4f} (arcface={avg_arc:.4f}, hard={avg_hard:.4f}) | "
             f"Val EER: {val_eer:.4f} (gap={val_stats['gap']:.4f}, "
             f"pos={val_stats['pos_mean']:.3f}, neg={val_stats['neg_mean']:.3f}) | "
+            f"LR: {current_lr[1]:.2e} | "
             f"Time: {epoch_time:.1f}s"
         )
 
@@ -254,15 +273,13 @@ def train_arcface(config_path):
     print(f"[INFO] ArcFace training complete. Best Val EER: {best_eer:.4f}")
 
     del backbone, arcface_loss, optimizer, train_loader, val_loader, scheduler
-    if pair_train_loader is not None:
-        del pair_train_loader
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train ArcFace model with hard pair mining.")
+    parser = argparse.ArgumentParser(description="Train ArcFace model (pure, no auxiliary losses).")
     parser.add_argument("--config", required=True, help="Path to YAML config file.")
     args = parser.parse_args()
     train_arcface(args.config)

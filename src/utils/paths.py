@@ -3,9 +3,12 @@ Centralized path definitions for the face verification project.
 
 Data protocol
 -------------
-  Train : CASIA-WebFace  -> data/processed/casia-webface/{S,M,L}/{identity_id}/*.jpg
-  Val   : CALFW + CPLFW  -> data/processed/{calfw,cplfw}/{S,M,L}/...
-  Test  : LFW only       -> data/processed/lfw/{S,M,L}/{name}/*.jpg
+  Train : CASIA-WebFace  -> data/processed/casia-webface/S/{identity_id}/*.jpg
+  Val   : CALFW + CPLFW  -> data/processed/{calfw,cplfw}/S/...
+  Test  : LFW only       -> data/processed/lfw/S/{name}/*.jpg
+
+  All images are stored at 300px crops (variant='s').
+  InceptionResnetV1Backbone internally resizes to 160px in forward().
 
 Raw / archive layout
 --------------------
@@ -47,7 +50,7 @@ ERROR_CASES_DIR = PROJECT_ROOT / "outputs" / "error_cases"
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 
-VARIANT_INPUT_SIZES = {"s": 300, "m": 384, "l": 480}
+VARIANT_INPUT_SIZES = {"s": 300, "m": 384, "l": 480, "i": 160}
 
 
 def variant_folder(variant: str) -> str:

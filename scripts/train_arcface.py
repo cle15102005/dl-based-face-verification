@@ -1,10 +1,8 @@
 """
-CLI entry point: ArcFace + Hard Pair Mining model training.
+CLI entry point: ArcFace model training (InceptionResnetV1 backbone).
 
 Step 3b — train on CASIA-WebFace identities, validate on CALFW+CPLFW:
-    python scripts/train_arcface.py --config configs/arcface_s.yaml
-    python scripts/train_arcface.py --config configs/arcface_m.yaml
-    python scripts/train_arcface.py --config configs/arcface_l.yaml
+    python scripts/train_arcface.py --config configs/arcface.yaml
 """
 
 import sys

@@ -18,7 +18,7 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.dataset import VerificationPairsDataset, load_lfw_test_pairs
@@ -28,7 +28,7 @@ from src.evaluation.metrics import (
     plot_far_frr_vs_threshold,
     plot_roc_curve,
 )
-from src.models.backbone import EfficientNetV2Backbone
+from src.models.backbone import EfficientNetV2Backbone, InceptionResnetV1Backbone
 from src.models.siamese import SiameseNetwork
 from src.training.train_utils import (
     extract_backbone_pair_similarities,
@@ -40,12 +40,8 @@ from src.utils.paths import CHECKPOINTS_DIR, METRICS_DIR, ensure_output_dirs
 
 
 MODEL_CONFIGS = [
-    ("baseline_s", "configs/baseline_s.yaml", "contrastive"),
-    ("baseline_m", "configs/baseline_m.yaml", "contrastive"),
-    ("baseline_l", "configs/baseline_l.yaml", "contrastive"),
-    ("arcface_s", "configs/arcface_s.yaml", "arcface"),
-    ("arcface_m", "configs/arcface_m.yaml", "arcface"),
-    ("arcface_l", "configs/arcface_l.yaml", "arcface"),
+    ("baseline", "configs/baseline.yaml", "contrastive"),
+    ("arcface",  "configs/arcface.yaml",  "arcface"),
 ]
 
 
@@ -56,11 +52,18 @@ def load_yaml_config(relative_path):
 
 
 def build_model(config, loss_type, device):
-    backbone = EfficientNetV2Backbone(
-        variant=config["variant"],
-        unfreeze_ratio=config["unfreeze_ratio"],
-        dropout=config["dropout"],
-    )
+    if config.get("backbone_type") == "inception":
+        backbone = InceptionResnetV1Backbone(
+            unfreeze_ratio=config["unfreeze_ratio"],
+            dropout=config["dropout"],
+            pretrained=None,  # weights loaded from checkpoint
+        )
+    else:
+        backbone = EfficientNetV2Backbone(
+            variant=config["variant"],
+            unfreeze_ratio=config["unfreeze_ratio"],
+            dropout=config["dropout"],
+        )
     if loss_type == "contrastive":
         return SiameseNetwork(backbone).to(device), True
     return backbone.to(device), False
@@ -81,10 +84,10 @@ def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_di
         variant=config["variant"],
         processed_root=processed_dir,
     )
-    eval_loader = DataLoader(eval_dataset, batch_size=config["batch_size"], shuffle=False)
+    eval_loader = DataLoader(eval_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
 
     model, use_siamese = build_model(config, loss_type, device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device), strict=False)
 
     if use_siamese:
         scores, labels = extract_pair_similarities(model, eval_loader, device, use_tta=use_tta)
@@ -118,8 +121,9 @@ def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_di
         title=f"FAR/FRR - {checkpoint_name} (LFW test, {tta_label})",
     )
 
+    backbone_label = "InceptionResnetV1" if config.get("backbone_type") == "inception" else f"EfficientNetV2-{config['variant'].upper()}"
     return {
-        "model": f"EfficientNetV2-{config['variant'].upper()}",
+        "model": backbone_label,
         "loss_type": loss_type,
         "variant": config["variant"],
         "eer": eer,

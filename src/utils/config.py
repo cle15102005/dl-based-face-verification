@@ -2,6 +2,8 @@
 YAML configuration loader with shared hyperparameter defaults.
 """
 
+import os
+
 import yaml
 from pathlib import Path
 
@@ -11,9 +13,9 @@ def load_config(config_path: str | Path) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
+    cpu_count = os.cpu_count() or 4
     defaults = {
         "processed_data_dir": "data/processed",
-        "train_val_split": 0.8,
         "split_seed": 42,
         "learning_rate": 1.0e-4,
         "weight_decay": 0.4,
@@ -29,6 +31,13 @@ def load_config(config_path: str | Path) -> dict:
         "hard_mining_weight": 0.1,
         "mining_strategy": "hard",
         "min_images": 2,
+        "webface_pairs_per_epoch": 10000,
+        "verification_weight": 0.2,
+        "lfw_test_augmentation": True,
+        "num_workers": min(8, max(2, cpu_count - 1)),
+        "prefetch_factor": 2,
+        "max_train_identities": 2000,
+        "max_images_per_identity": 20,
     }
     for key, value in defaults.items():
         config.setdefault(key, value)

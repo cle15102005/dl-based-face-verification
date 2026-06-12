@@ -1,11 +1,12 @@
 """
 Shared training utilities: evaluation helpers, latency measurement, early stopping.
-  - EarlyStopping(patience=5) monitoring validation EER (previously missing).
-  - evaluate_val_eer() for per-epoch validation (previously only training loss was logged).
-  - Checkpoints saved on best validation EER, not last epoch.
+
+Validation EER is computed on CALFW + CPLFW pairs during training.
+LFW test evaluation (scripts/evaluate_lfw.py) can optionally apply horizontal-flip TTA.
 """
 
 import time
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -16,25 +17,63 @@ from src.evaluation.metrics import compute_eer
 def resolve_project_path(project_root, relative_path):
     """Convert a config-relative path to an absolute path."""
     from pathlib import Path
+
     path = Path(relative_path)
     if path.is_absolute():
         return str(path)
     return str(project_root / path)
 
 
-@torch.no_grad()
-def extract_pair_similarities(model, dataloader, device):
+def dataloader_kwargs(config: dict, device: torch.device) -> dict:
     """
-    Run SiameseNetwork on all pair batches and collect cosine similarity scores.
+    Shared DataLoader settings for faster image loading.
 
-    Used for baseline (contrastive) model evaluation.
+    num_workers > 0 enables parallel decode in worker processes (much faster than 0).
     """
+    num_workers = int(config.get("num_workers", 4))
+    kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": device.type == "cuda",
+    }
+    if num_workers > 0:
+        kwargs["persistent_workers"] = True
+        kwargs["prefetch_factor"] = int(config.get("prefetch_factor", 2))
+    return kwargs
+
+
+def _average_pair_similarity(model, img1, img2, device, use_siamese, use_tta):
+    """
+    Compute cosine similarity for one pair.
+
+    When use_tta=True (LFW test only), average embeddings from the original image
+    and its horizontal flip before computing similarity.
+    """
+    del device
+    if use_siamese:
+        emb_a, emb_b, _ = model(img1, img2)
+        if use_tta:
+            flip_a, flip_b, _ = model(torch.flip(img1, dims=[3]), torch.flip(img2, dims=[3]))
+            emb_a = 0.5 * (emb_a + flip_a)
+            emb_b = 0.5 * (emb_b + flip_b)
+        return F.cosine_similarity(emb_a, emb_b, dim=1)
+
+    emb1 = model(img1)
+    emb2 = model(img2)
+    if use_tta:
+        emb1 = 0.5 * (emb1 + model(torch.flip(img1, dims=[3])))
+        emb2 = 0.5 * (emb2 + model(torch.flip(img2, dims=[3])))
+    return F.cosine_similarity(emb1, emb2, dim=1)
+
+
+@torch.no_grad()
+def extract_pair_similarities(model, dataloader, device, use_tta=False):
+    """Collect cosine similarities from a SiameseNetwork over all pair batches."""
     model.eval()
     scores, labels = [], []
 
     for img1, img2, label in dataloader:
         img1, img2 = img1.to(device), img2.to(device)
-        _, _, cos_sim = model(img1, img2)
+        cos_sim = _average_pair_similarity(model, img1, img2, device, use_siamese=True, use_tta=use_tta)
         scores.extend(cos_sim.cpu().numpy().tolist())
         labels.extend(label.numpy().tolist())
 
@@ -42,33 +81,36 @@ def extract_pair_similarities(model, dataloader, device):
 
 
 @torch.no_grad()
-def extract_backbone_pair_similarities(backbone, dataloader, device):
-    """
-    Run EfficientNetV2Backbone on pair batches for ArcFace-trained model evaluation.
-
-    ArcFace checkpoints save backbone weights only, so similarity is computed
-    directly from backbone embeddings without a Siamese wrapper.
-    """
+def extract_backbone_pair_similarities(backbone, dataloader, device, use_tta=False):
+    """Collect cosine similarities from backbone embeddings over all pair batches."""
     backbone.eval()
     scores, labels = [], []
 
     for img1, img2, label in dataloader:
         img1, img2 = img1.to(device), img2.to(device)
-        emb1 = backbone(img1)
-        emb2 = backbone(img2)
-        cos_sim = F.cosine_similarity(emb1, emb2, dim=1)
+        cos_sim = _average_pair_similarity(
+            backbone, img1, img2, device, use_siamese=False, use_tta=use_tta
+        )
         scores.extend(cos_sim.cpu().numpy().tolist())
         labels.extend(label.numpy().tolist())
 
     return scores, labels
 
 
-def evaluate_val_eer(model, val_loader, device, use_siamese=True, progress_desc=None):
+def evaluate_val_eer(
+    model,
+    val_loader,
+    device,
+    use_siamese=True,
+    progress_desc=None,
+    return_stats=False,
+    use_tta=False,
+):
     """
-    Compute Equal Error Rate (EER) on a validation pair set.
+    Compute Equal Error Rate (EER) on a pair set.
 
-    EER = threshold where FAR == FRR. Lower is better.
-    Called each epoch during training for early stopping and checkpoint selection.
+    Training validation uses CALFW + CPLFW without TTA.
+    LFW test evaluation can pass use_tta=True for horizontal-flip augmentation.
     """
     import numpy as np
     from tqdm import tqdm
@@ -78,20 +120,30 @@ def evaluate_val_eer(model, val_loader, device, use_siamese=True, progress_desc=
         loader = tqdm(val_loader, desc=progress_desc, unit="batch", leave=False)
 
     if use_siamese:
-        scores, labels = extract_pair_similarities(model, loader, device)
+        scores, labels = extract_pair_similarities(model, loader, device, use_tta=use_tta)
     else:
-        scores, labels = extract_backbone_pair_similarities(model, loader, device)
+        scores, labels = extract_backbone_pair_similarities(model, loader, device, use_tta=use_tta)
 
-    eer, _, _, _, _ = compute_eer(np.array(scores), np.array(labels))
-    return eer
+    scores_arr = np.array(scores)
+    labels_arr = np.array(labels)
+    eer, _, _, _, _ = compute_eer(scores_arr, labels_arr)
+
+    if not return_stats:
+        return eer
+
+    genuine = scores_arr[labels_arr == 1]
+    impostor = scores_arr[labels_arr == 0]
+    pos_mean = float(genuine.mean()) if genuine.size else 0.0
+    neg_mean = float(impostor.mean()) if impostor.size else 0.0
+    return eer, {
+        "pos_mean": pos_mean,
+        "neg_mean": neg_mean,
+        "gap": pos_mean - neg_mean,
+    }
 
 
 def measure_pair_latency(model, sample_pair, device, use_siamese=True, repeats=50):
-    """
-    Measure average inference latency (ms) for one verification pair.
-
-    Includes 5 warmup runs before timing to exclude GPU initialization overhead.
-    """
+    """Measure average inference latency (ms) for one verification pair."""
     img1, img2 = sample_pair
     img1 = img1.unsqueeze(0).to(device)
     img2 = img2.unsqueeze(0).to(device)
@@ -122,12 +174,7 @@ def measure_pair_latency(model, sample_pair, device, use_siamese=True, repeats=5
 
 
 class EarlyStopping:
-    """
-    Stop training when validation EER does not improve for `patience` consecutive epochs.
-
-    Also signals when a new best checkpoint should be saved.
-    Previously missing — training ran all epochs and saved the last one only.
-    """
+    """Stop training when validation EER does not improve for `patience` consecutive epochs."""
 
     def __init__(self, patience=5):
         self.patience = patience
@@ -136,13 +183,6 @@ class EarlyStopping:
         self.should_stop = False
 
     def step(self, metric):
-        """
-        Args:
-            metric: Current epoch validation EER (lower is better).
-
-        Returns:
-            True if this is a new best score (caller should save checkpoint).
-        """
         if metric < self.best_score:
             self.best_score = metric
             self.counter = 0

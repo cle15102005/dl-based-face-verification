@@ -1,8 +1,11 @@
 """
 Baseline Siamese Network training with Contrastive Loss.
 
-Train/Val: merged CALFW + CPLFW eval pairs (80/20 split).
-Test:     LFW eval pairs only (via evaluate_lfw.py).
+Data protocol
+-------------
+  Train : CASIA-WebFace random pairs (no augmentation)
+  Val   : CALFW + CPLFW merged eval pairs
+  Test  : LFW only (run scripts/evaluate_lfw.py after training)
 
 Usage:
     python scripts/train_baseline.py --config configs/baseline_s.yaml
@@ -22,11 +25,20 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data.dataset import VerificationPairsDataset, load_calfw_cplfw_train_val
+from src.data.dataset import (
+    VerificationPairsDataset,
+    WebFacePairsDataset,
+    load_validation_pairs,
+)
 from src.models.backbone import EfficientNetV2Backbone
 from src.models.losses import ContrastiveLoss
 from src.models.siamese import SiameseNetwork
-from src.training.train_utils import EarlyStopping, evaluate_val_eer, resolve_project_path
+from src.training.train_utils import (
+    EarlyStopping,
+    dataloader_kwargs,
+    evaluate_val_eer,
+    resolve_project_path,
+)
 from src.utils.config import load_config
 from src.utils.paths import CHECKPOINTS_DIR, ensure_output_dirs
 
@@ -35,30 +47,39 @@ def train_baseline(config_path):
     config = load_config(config_path)
     ensure_output_dirs()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Training baseline on device: {device}")
+    loader_kwargs = dataloader_kwargs(config, device)
+    print(f"[INFO] Training baseline on device: {device} | num_workers={loader_kwargs['num_workers']}")
 
     processed_dir = resolve_project_path(PROJECT_ROOT, config["processed_data_dir"])
     variant = config["variant"]
     batch_size = config["batch_size"]
 
-    train_entries, val_entries = load_calfw_cplfw_train_val(
-        train_ratio=config["train_val_split"],
+    train_dataset = WebFacePairsDataset(
+        variant=variant,
+        processed_root=processed_dir,
+        num_pairs=config.get("webface_pairs_per_epoch", 10000),
         seed=config["split_seed"],
     )
 
-    train_dataset = VerificationPairsDataset(
-        pair_entries=train_entries,
-        variant=variant,
-        processed_root=processed_dir,
-    )
+    val_entries = load_validation_pairs()
     val_dataset = VerificationPairsDataset(
         pair_entries=val_entries,
         variant=variant,
         processed_root=processed_dir,
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        **loader_kwargs,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        **loader_kwargs,
+    )
 
     backbone = EfficientNetV2Backbone(
         variant=variant,
@@ -85,7 +106,7 @@ def train_baseline(config_path):
 
         train_pbar = tqdm(
             train_loader,
-            desc=f"Epoch {epoch + 1}/{epochs} [Train]",
+            desc=f"Epoch {epoch + 1}/{epochs} [Train/WebFace]",
             unit="batch",
             leave=False,
         )
@@ -105,7 +126,7 @@ def train_baseline(config_path):
             val_loader,
             device,
             use_siamese=True,
-            progress_desc=f"Epoch {epoch + 1}/{epochs} [Val]",
+            progress_desc=f"Epoch {epoch + 1}/{epochs} [Val/CALFW+CPLFW]",
         )
         epoch_time = time.time() - start_time
         print(

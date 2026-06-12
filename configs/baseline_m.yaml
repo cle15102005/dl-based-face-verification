@@ -1,15 +1,21 @@
+# Train: CASIA-WebFace | Val: CALFW+CPLFW | Test: LFW
 variant: m
 loss_type: contrastive
 checkpoint_name: baseline_m
 input_size: 384
 batch_size: 8
 learning_rate: 1.0e-4
-weight_decay: 0.4
+weight_decay: 5.0e-4
 epochs: 30
 dropout: 0.3
 unfreeze_ratio: 0.3
 early_stopping_patience: 5
 contrastive_margin: 1.0
-train_val_split: 0.8
 split_seed: 42
 processed_data_dir: data/processed
+webface_pairs_per_epoch: 10000
+lfw_test_augmentation: true
+num_workers: 8
+prefetch_factor: 2
+max_train_identities: 2000
+max_images_per_identity: 20

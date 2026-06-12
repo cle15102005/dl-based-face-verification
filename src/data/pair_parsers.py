@@ -1,9 +1,11 @@
 """
 Parse evaluation pair protocols for LFW, CALFW, and CPLFW.
 
-All parsers return a unified list of dicts:
-  {"dataset": str, "img1": str, "img2": str, "label": int}
-where img1/img2 are filenames or LFW (name, id) tuples resolved later by path helpers.
+Used for:
+  - Validation : CALFW + CPLFW (merged, all pairs)
+  - Test       : LFW only
+
+All parsers return a unified list of dicts resolved later by dataset.resolve_pair_image_paths().
 """
 
 from __future__ import annotations

@@ -1,11 +1,16 @@
 """
 PyTorch datasets for face verification.
 
-Data protocol:
-  - Train / Val: merged CALFW + CPLFW eval pairs (80/20 split)
-  - Test:        LFW eval pairs only
+Data protocol
+-------------
+  Train : CASIA-WebFace identities / randomly sampled pairs (no augmentation)
+  Val   : merged CALFW + CPLFW official eval pairs (no augmentation)
+  Test  : LFW official eval pairs only (horizontal-flip TTA at eval time)
 
-All three datasets use their official evaluation pair lists only.
+Preprocessing prerequisites
+---------------------------
+  Step 1: python scripts/extract_casia_webface.py
+  Step 2: python scripts/mtcnn_preprocess.py
 """
 
 from __future__ import annotations
@@ -26,7 +31,6 @@ from src.data.pair_parsers import (
     parse_cplfw_pairs,
     parse_lfw_pairs_csv,
 )
-from src.data.splits import merge_train_val_split
 from src.utils.paths import (
     CALFW_PAIRS_CSV,
     CPLFW_PAIRS_CSV,
@@ -37,6 +41,7 @@ from src.utils.paths import (
 
 
 def _default_transform():
+    """Standard ImageNet normalization — used for train, validation, and val/test pair loading."""
     return transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -47,7 +52,9 @@ def resolve_pair_image_paths(entry: dict, variant: str, processed_root: Path | N
     """
     Resolve absolute image paths for a unified pair entry.
 
-    Supports LFW (identity + image id) and CALFW/CPLFW (flat filename layout).
+    Supports:
+      - LFW      : identity folder + numbered JPG
+      - CALFW/CPLFW : flat 'aligned images/' layout
     """
     processed_root = processed_root or DATA_PROCESSED
     dataset = entry["dataset"]
@@ -79,35 +86,51 @@ def resolve_pair_image_paths(entry: dict, variant: str, processed_root: Path | N
     return _find(img1_name), _find(img2_name)
 
 
-def load_calfw_cplfw_train_val(
-    train_ratio: float = 0.8,
-    seed: int = 42,
-) -> tuple[list[dict], list[dict]]:
-    """Load and split merged CALFW + CPLFW eval pairs."""
+def load_validation_pairs() -> list[dict]:
+    """
+    Load the full CALFW + CPLFW validation set (12,000 pairs total).
+
+    Both benchmarks are used together for model selection during training.
+    """
     calfw_pairs = parse_calfw_pairs(CALFW_PAIRS_CSV)
     cplfw_pairs = parse_cplfw_pairs(CPLFW_PAIRS_CSV)
-    train_pairs, val_pairs = merge_train_val_split(
-        [calfw_pairs, cplfw_pairs],
-        train_ratio=train_ratio,
-        seed=seed,
-    )
+    val_pairs = calfw_pairs + cplfw_pairs
     print(
-        f"[INFO] CALFW pairs: {len(calfw_pairs)} | CPLFW pairs: {len(cplfw_pairs)} | "
-        f"Train: {len(train_pairs)} | Val: {len(val_pairs)}"
+        f"[INFO] Validation pairs: CALFW={len(calfw_pairs)} + "
+        f"CPLFW={len(cplfw_pairs)} -> {len(val_pairs)} total"
     )
-    return train_pairs, val_pairs
+    return val_pairs
 
 
 def load_lfw_test_pairs() -> list[dict]:
-    """Load LFW evaluation pairs (test set)."""
+    """Load LFW evaluation pairs (6,000 pairs) for final held-out testing."""
     pairs = parse_lfw_pairs_csv(LFW_PAIRS_CSV)
     print(f"[INFO] LFW test pairs: {len(pairs)}")
     return pairs
 
 
+def _scan_identity_folders(root: Path) -> dict[str, list[str]]:
+    """Map identity folder name -> list of absolute image paths."""
+    identity_to_paths: dict[str, list[str]] = {}
+    if not root.exists():
+        return identity_to_paths
+
+    for identity_dir in sorted(root.iterdir()):
+        if not identity_dir.is_dir():
+            continue
+        paths = [
+            str(path)
+            for path in sorted(identity_dir.iterdir())
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        ]
+        if paths:
+            identity_to_paths[identity_dir.name] = paths
+    return identity_to_paths
+
+
 class VerificationPairsDataset(Dataset):
     """
-    Pair-based dataset for contrastive training or evaluation.
+    Pair-based dataset for contrastive training, validation, or LFW testing.
 
     Each item returns (img1, img2, label) where label 1 = same person, 0 = different.
     """
@@ -154,16 +177,84 @@ class VerificationPairsDataset(Dataset):
         return img1, img2, torch.tensor(float(label), dtype=torch.float32)
 
 
-class IdentityDatasetFromPairs(Dataset):
+class WebFacePairsDataset(Dataset):
     """
-    Identity-labeled images extracted from evaluation pair lists (for ArcFace training).
+    Randomly sampled same/different pairs from CASIA-WebFace for baseline training.
 
-    Only includes images that appear in the supplied pair entries.
+    Each __getitem__ call draws a fresh pair, so every epoch sees different samples.
     """
 
     def __init__(
         self,
-        pair_entries: list[dict],
+        variant: str = "s",
+        transform=None,
+        processed_root: Path | str | None = None,
+        num_pairs: int = 50000,
+        pos_fraction: float = 0.5,
+        seed: int = 42,
+        min_images_per_identity: int = 2,
+    ):
+        self.variant = variant
+        self.transform = transform if transform else _default_transform()
+        self.processed_root = Path(processed_root) if processed_root else DATA_PROCESSED
+        self.num_pairs = num_pairs
+        self.pos_fraction = pos_fraction
+        self.seed = seed
+
+        img_root = processed_variant_dir("casia-webface", variant)
+        if not img_root.exists():
+            img_root = self.processed_root / "casia-webface" / variant.upper()
+
+        self.identity_to_paths = {
+            identity: paths
+            for identity, paths in _scan_identity_folders(img_root).items()
+            if len(paths) >= min_images_per_identity
+        }
+        self.identities = sorted(self.identity_to_paths.keys())
+
+        if len(self.identities) < 2:
+            raise RuntimeError(
+                f"Need at least 2 CASIA-WebFace identities with >= {min_images_per_identity} "
+                f"images under {img_root}. Run scripts/extract_casia_webface.py first."
+            )
+
+        print(
+            f"[INFO] WebFacePairsDataset: {len(self.identities)} identities, "
+            f"{self.num_pairs} random pairs per epoch."
+        )
+
+    def __len__(self):
+        return self.num_pairs
+
+    def __getitem__(self, idx):
+        rng = random.Random(self.seed + idx)
+        if rng.random() < self.pos_fraction:
+            identity = rng.choice(self.identities)
+            path_a, path_b = rng.sample(self.identity_to_paths[identity], 2)
+            label = 1.0
+        else:
+            identity_a, identity_b = rng.sample(self.identities, 2)
+            path_a = rng.choice(self.identity_to_paths[identity_a])
+            path_b = rng.choice(self.identity_to_paths[identity_b])
+            label = 0.0
+
+        img1 = Image.open(path_a).convert("RGB")
+        img2 = Image.open(path_b).convert("RGB")
+        if self.transform:
+            img1 = self.transform(img1)
+            img2 = self.transform(img2)
+        return img1, img2, torch.tensor(label, dtype=torch.float32)
+
+
+class CasiaWebFaceIdentityDataset(Dataset):
+    """
+    Identity-labeled CASIA-WebFace images for ArcFace + hard pair mining training.
+
+    Reads every JPG under data/processed/casia-webface/{S,M,L}/{identity_id}/.
+    """
+
+    def __init__(
+        self,
         variant: str = "s",
         transform=None,
         processed_root: Path | str | None = None,
@@ -173,28 +264,18 @@ class IdentityDatasetFromPairs(Dataset):
         self.transform = transform if transform else _default_transform()
         self.processed_root = Path(processed_root) if processed_root else DATA_PROCESSED
 
-        identity_to_paths: dict[str, list[str]] = {}
-        seen_paths: set[str] = set()
+        img_root = processed_variant_dir("casia-webface", variant)
+        if not img_root.exists():
+            img_root = self.processed_root / "casia-webface" / variant.upper()
 
-        for entry in pair_entries:
-            if entry.get("kind") == "lfw_id":
-                continue
-            img1_path, img2_path = resolve_pair_image_paths(
-                entry, self.variant, self.processed_root
-            )
-            for path in (img1_path, img2_path):
-                if not os.path.exists(path) or path in seen_paths:
-                    continue
-                seen_paths.add(path)
-                identity = identity_from_filename(os.path.basename(path))
-                identity_to_paths.setdefault(identity, []).append(path)
+        identity_to_paths = _scan_identity_folders(img_root)
 
         self.samples: list[str] = []
         self.labels: list[int] = []
         self.label_to_indices: dict[int, list[int]] = {}
         label_id = 0
 
-        for identity, paths in sorted(identity_to_paths.items()):
+        for _identity, paths in sorted(identity_to_paths.items()):
             if len(paths) < min_images:
                 continue
             self.label_to_indices[label_id] = []
@@ -204,9 +285,15 @@ class IdentityDatasetFromPairs(Dataset):
                 self.label_to_indices[label_id].append(len(self.samples) - 1)
             label_id += 1
 
+        if label_id < 2:
+            raise RuntimeError(
+                f"Not enough CASIA-WebFace identities under {img_root}. "
+                "Run scripts/extract_casia_webface.py first."
+            )
+
         print(
-            f"[INFO] IdentityDatasetFromPairs: {label_id} identities, "
-            f"{len(self.samples)} images (from eval pairs)."
+            f"[INFO] CasiaWebFaceIdentityDataset: {label_id} identities, "
+            f"{len(self.samples)} images."
         )
 
     def __len__(self):
@@ -222,7 +309,7 @@ class IdentityDatasetFromPairs(Dataset):
 class PKBatchSampler(Sampler):
     """P identities x K images per batch for ArcFace + hard pair mining."""
 
-    def __init__(self, dataset: IdentityDatasetFromPairs, p: int = 16, k: int = 4):
+    def __init__(self, dataset: CasiaWebFaceIdentityDataset, p: int = 16, k: int = 4):
         self.dataset = dataset
         self.p = min(p, len(dataset.label_to_indices))
         self.k = k
@@ -246,11 +333,18 @@ class PKBatchSampler(Sampler):
         return self.num_batches
 
 
-# Backward-compatible alias used by evaluation scripts
 class LFWPairsDataset(VerificationPairsDataset):
-    """LFW test set wrapper — loads all LFW eval pairs."""
+    """Backward-compatible wrapper for LFW test evaluation."""
 
     def __init__(self, pairs_file_path=None, processed_data_dir=None, img_size="s", transform=None, fold=None):
         del pairs_file_path, processed_data_dir, fold
         pairs = load_lfw_test_pairs()
         super().__init__(pair_entries=pairs, variant=img_size, transform=transform)
+
+
+def load_calfw_cplfw_train_val(*_args, **_kwargs):
+    """Deprecated: training now uses CASIA-WebFace. Use load_validation_pairs() instead."""
+    raise NotImplementedError(
+        "Training data is CASIA-WebFace. Use WebFacePairsDataset / CasiaWebFaceIdentityDataset "
+        "for training and load_validation_pairs() for validation."
+    )

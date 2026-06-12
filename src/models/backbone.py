@@ -75,3 +75,12 @@ class EfficientNetV2Backbone(nn.Module):
         features = self.dropout(features)
         embeddings = F.normalize(features, p=2, dim=1)
         return embeddings
+
+    def set_train_mode(self, freeze_batchnorm: bool = True):
+        """Set train mode; optionally keep BatchNorm in eval to preserve pretrained stats."""
+        self.train()
+        if not freeze_batchnorm:
+            return
+        for module in self.modules():
+            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                module.eval()

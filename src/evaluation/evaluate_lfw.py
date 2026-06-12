@@ -1,5 +1,11 @@
 """
-Evaluate all trained models on the LFW test set (eval pairs only).
+Evaluate all trained models on the LFW test set (6,000 eval pairs).
+
+Step 4 of the pipeline — run after training:
+    python scripts/evaluate_lfw.py
+
+LFW is never used during training. When lfw_test_augmentation=true in the config,
+horizontal-flip test-time augmentation (TTA) is applied at evaluation.
 """
 
 import argparse
@@ -63,6 +69,7 @@ def build_model(config, loss_type, device):
 def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_dir):
     config = load_yaml_config(config_path)
     checkpoint_path = CHECKPOINTS_DIR / f"{checkpoint_name}.pt"
+    use_tta = config.get("lfw_test_augmentation", True)
 
     if not checkpoint_path.exists():
         print(f"[WARN] Checkpoint not found, skipping: {checkpoint_path}")
@@ -80,9 +87,9 @@ def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_di
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
 
     if use_siamese:
-        scores, labels = extract_pair_similarities(model, eval_loader, device)
+        scores, labels = extract_pair_similarities(model, eval_loader, device, use_tta=use_tta)
     else:
-        scores, labels = extract_backbone_pair_similarities(model, eval_loader, device)
+        scores, labels = extract_backbone_pair_similarities(model, eval_loader, device, use_tta=use_tta)
 
     scores_arr = np.array(scores)
     labels_arr = np.array(labels)
@@ -97,15 +104,18 @@ def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_di
     else:
         latency_ms = 0.0
 
+    tta_label = "TTA" if use_tta else "no-TTA"
     plot_roc_curve(
-        scores_arr, labels_arr,
+        scores_arr,
+        labels_arr,
         METRICS_DIR / f"{checkpoint_name}_roc.png",
-        title=f"ROC - {checkpoint_name} (LFW test)",
+        title=f"ROC - {checkpoint_name} (LFW test, {tta_label})",
     )
     plot_far_frr_vs_threshold(
-        scores_arr, labels_arr,
+        scores_arr,
+        labels_arr,
         METRICS_DIR / f"{checkpoint_name}_far_frr.png",
-        title=f"FAR/FRR - {checkpoint_name} (LFW test)",
+        title=f"FAR/FRR - {checkpoint_name} (LFW test, {tta_label})",
     )
 
     return {
@@ -116,6 +126,7 @@ def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_di
         "eer_threshold": eer_threshold,
         "far_at_frr_1pct": far_at_1pct_frr,
         "latency_ms": latency_ms,
+        "lfw_tta": use_tta,
         "checkpoint": str(checkpoint_path),
     }
 
@@ -139,7 +150,7 @@ def run_evaluation():
             results.append(result)
             print(
                 f"[INFO] EER={result['eer']:.4f} | FAR@FRR1%={result['far_at_frr_1pct']:.4f} | "
-                f"Latency={result['latency_ms']:.2f}ms"
+                f"Latency={result['latency_ms']:.2f}ms | TTA={result['lfw_tta']}"
             )
 
     if not results:
@@ -150,7 +161,7 @@ def run_evaluation():
     csv_path = METRICS_DIR / "comparison_table.csv"
     df.to_csv(csv_path, index=False)
     print(f"\n[INFO] Comparison table saved to: {csv_path}")
-    print(df[["model", "loss_type", "eer", "far_at_frr_1pct", "latency_ms"]].to_string(index=False))
+    print(df[["model", "loss_type", "eer", "far_at_frr_1pct", "latency_ms", "lfw_tta"]].to_string(index=False))
 
 
 if __name__ == "__main__":

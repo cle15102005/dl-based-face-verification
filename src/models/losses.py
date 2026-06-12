@@ -109,10 +109,14 @@ class HardPairContrastiveLoss(nn.Module):
             hard_pos_idx:  Hardest positive index per sample [batch].
             hard_neg_idx:  Hardest negative index per sample [batch].
         """
-        pos_dist = F.pairwise_distance(embeddings, embeddings[hard_pos_idx])
-        pos_loss = torch.pow(pos_dist, 2).mean()
+        embeddings = F.normalize(embeddings, p=2, dim=1)
 
-        neg_dist = F.pairwise_distance(embeddings, embeddings[hard_neg_idx])
-        neg_loss = torch.pow(torch.clamp(self.margin - neg_dist, min=0.0), 2).mean()
+        cos_pos = (embeddings * embeddings[hard_pos_idx]).sum(dim=1)
+        pos_loss = torch.pow(1.0 - cos_pos, 2).mean()
+
+        cos_neg = (embeddings * embeddings[hard_neg_idx]).sum(dim=1)
+        # Euclidean margin on unit vectors: dist >= margin  <=>  cos <= 1 - margin^2 / 2
+        cos_threshold = 1.0 - 0.5 * (self.margin ** 2)
+        neg_loss = torch.pow(torch.clamp(cos_neg - cos_threshold, min=0.0), 2).mean()
 
         return pos_loss + neg_loss

@@ -1,24 +1,39 @@
 """
 MTCNN face detection, alignment, and multi-resolution preprocessing.
 
-Pipeline:
-  1. Load raw LFW images from data/raw/lfw/.
-  2. Detect and align faces using MTCNN (facenet-pytorch).
-  3. Crop faces and resize to EfficientNetV2 input sizes: S=300, M=384, L=480.
-  4. Save to data/processed/{s,m,l}/{identity}/.
-  5. Log failed detections to outputs/results/mtcnn_failed_detections.log.
+Step 2 of the pipeline (evaluation datasets only)
+-------------------------------------------------
+  Input  : data/raw/{lfw,calfw,cplfw}/
+  Output : data/processed/{lfw,calfw,cplfw}/{S,M,L}/...
 
-Imports canonical paths from src/utils/paths.py.
+CASIA-WebFace is already aligned inside the .rec pack — use extract_casia_webface.py
+instead of MTCNN for that dataset.
+
+For each raw image:
+  1. Detect and align the face with MTCNN (facenet-pytorch).
+  2. Crop and resize to EfficientNetV2 sizes: S=300, M=384, L=480.
+  3. Log failed detections to outputs/results/mtcnn_failed_detections.log.
 """
 
-import os
-import torch
+from __future__ import annotations
+
 import logging
+import os
+from pathlib import Path
+
+import torch
 from PIL import Image
 from facenet_pytorch import MTCNN
 from tqdm import tqdm
 
-from src.utils.paths import LFW_RAW, LFW_PROCESSED, RESULTS_DIR
+from src.utils.paths import (
+    CALFW_RAW,
+    CPLFW_RAW,
+    DATA_PROCESSED,
+    LFW_RAW,
+    RESULTS_DIR,
+    VARIANT_INPUT_SIZES,
+)
 
 
 logging.basicConfig(
@@ -29,71 +44,123 @@ logging.basicConfig(
 )
 
 
-def preprocess_and_split(raw_dir=None, processed_dir=None):
-    """
-    Detect faces using MTCNN and save multi-resolution crops for all EfficientNetV2 variants.
+# Raw image roots and where processed crops are written.
+DATASET_LAYOUT = {
+    "lfw": {
+        "raw_root": LFW_RAW / "lfw-deepfunneled",
+        "processed_root": DATA_PROCESSED / "lfw",
+        "layout": "identity_folders",
+    },
+    "calfw": {
+        "raw_root": CALFW_RAW,
+        "processed_root": DATA_PROCESSED / "calfw",
+        "layout": "flat_or_nested",
+    },
+    "cplfw": {
+        "raw_root": CPLFW_RAW,
+        "processed_root": DATA_PROCESSED / "cplfw",
+        "layout": "flat_or_nested",
+    },
+}
 
-    Steps:
-      1. Initialize MTCNN on GPU (or CPU fallback).
-      2. Scan raw LFW identity folders.
-      3. For each image: detect face, crop, resize to S/M/L, save to processed dirs.
-      4. Log any images where face detection failed.
+
+def _iter_raw_images(raw_root: Path, layout: str):
     """
-    raw_dir = raw_dir or str(LFW_RAW / "lfw-deepfunneled")
-    processed_dir = processed_dir or str(LFW_PROCESSED)
+    Yield (relative_subdir, image_path) tuples for supported raw layouts.
+
+    LFW uses one folder per identity. CALFW/CPLFW ship flat or nested JPG folders.
+    """
+    if not raw_root.exists():
+        return
+
+    if layout == "identity_folders":
+        for identity_dir in sorted(raw_root.iterdir()):
+            if not identity_dir.is_dir():
+                continue
+            for image_path in sorted(identity_dir.iterdir()):
+                if image_path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                    yield identity_dir.name, image_path
+        return
+
+    image_dirs = ["aligned images", "images", ""]
+    for sub in image_dirs:
+        search_root = raw_root / sub if sub else raw_root
+        if not search_root.exists():
+            continue
+        for image_path in sorted(search_root.rglob("*")):
+            if image_path.is_file() and image_path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                yield "", image_path
+        break
+
+
+def preprocess_dataset(dataset_name: str, mtcnn: MTCNN, variant_sizes: dict[str, int]) -> None:
+    """Run MTCNN on one evaluation dataset and save S/M/L crops."""
+    if dataset_name not in DATASET_LAYOUT:
+        raise ValueError(f"Unknown dataset '{dataset_name}'. Choose from {list(DATASET_LAYOUT)}")
+
+    spec = DATASET_LAYOUT[dataset_name]
+    raw_root = Path(spec["raw_root"])
+    processed_root = Path(spec["processed_root"])
+    layout = spec["layout"]
+
+    images = list(_iter_raw_images(raw_root, layout))
+    if not images:
+        print(f"[WARN] No raw images found for '{dataset_name}' under {raw_root}")
+        return
+
+    print(f"[INFO] Preprocessing {dataset_name}: {len(images)} images from {raw_root}")
+
+    for subdir, image_path in tqdm(images, desc=f"MTCNN {dataset_name}", unit="img"):
+        try:
+            img = Image.open(image_path).convert("RGB")
+            face = mtcnn(img)
+            if face is None:
+                logging.warning(str(image_path))
+                continue
+
+            if isinstance(face, torch.Tensor):
+                face_np = face.permute(1, 2, 0).numpy()
+                face_pil = Image.fromarray(face_np.astype("uint8"))
+            else:
+                face_pil = face
+
+            if layout == "identity_folders":
+                save_subdir = subdir
+                save_name = image_path.name
+            else:
+                save_subdir = "aligned images"
+                save_name = image_path.name
+
+            for variant, size in variant_sizes.items():
+                out_dir = processed_root / variant / save_subdir
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / save_name
+                resized = face_pil.resize((size, size), Image.Resampling.LANCZOS)
+                resized.save(out_path)
+        except Exception as exc:
+            logging.warning(f"{image_path} | ERROR: {exc}")
+
+
+def preprocess_and_split(datasets: list[str] | None = None):
+    """
+    Preprocess LFW / CALFW / CPLFW with MTCNN.
+
+    Args:
+        datasets: Subset to process, e.g. ["lfw", "calfw", "cplfw"]. Default: all three.
+    """
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    datasets = datasets or list(DATASET_LAYOUT.keys())
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Initializing MTCNN on device: {device}")
 
-    # margin=20 preserves jawline/forehead for better embedding quality
     mtcnn = MTCNN(margin=20, keep_all=False, post_process=False, device=device)
-    variant_sizes = {"S": 300, "M": 384, "L": 480}
+    variant_sizes = {variant.upper(): size for variant, size in VARIANT_INPUT_SIZES.items()}
 
-    if not os.path.exists(raw_dir) or not os.listdir(raw_dir):
-        print(f"[ERROR] Raw data directory '{raw_dir}' is empty or missing.")
-        print(f"[INFO] Download LFW to: {raw_dir}")
-        return
+    for dataset_name in datasets:
+        preprocess_dataset(dataset_name, mtcnn, variant_sizes)
 
-    identities = [d for d in os.listdir(raw_dir) if os.path.isdir(os.path.join(raw_dir, d))]
-    total_images = sum(len(os.listdir(os.path.join(raw_dir, d))) for d in identities)
-    print(f"[INFO] Found {len(identities)} identities and {total_images} total images.")
-
-    with tqdm(total=total_images, desc="Processing & Splitting Faces") as pbar:
-        for identity_name in identities:
-            identity_path = os.path.join(raw_dir, identity_name)
-
-            for variant in variant_sizes:
-                os.makedirs(os.path.join(processed_dir, variant, identity_name), exist_ok=True)
-
-            for image_name in os.listdir(identity_path):
-                img_path = os.path.join(identity_path, image_name)
-                try:
-                    img = Image.open(img_path).convert("RGB")
-                    face = mtcnn(img)
-
-                    if face is None:
-                        logging.warning(img_path)
-                        pbar.update(1)
-                        continue
-
-                    if isinstance(face, torch.Tensor):
-                        face_np = face.permute(1, 2, 0).numpy()
-                        face_pil = Image.fromarray(face_np.astype("uint8"))
-                    else:
-                        face_pil = face
-
-                    for variant, size in variant_sizes.items():
-                        out_path = os.path.join(processed_dir, variant, identity_name, image_name)
-                        resized_face = face_pil.resize((size, size), Image.Resampling.LANCZOS)
-                        resized_face.save(out_path)
-
-                except Exception as exc:
-                    logging.warning(f"{img_path} | ERROR: {exc}")
-
-                pbar.update(1)
-
-    print(f"\n[INFO] Preprocessing complete! Faces saved to: {processed_dir}")
+    print(f"\n[INFO] MTCNN preprocessing complete for: {', '.join(datasets)}")
     print(f"[INFO] Failed detections logged to: {os.path.join(RESULTS_DIR, 'mtcnn_failed_detections.log')}")
 
 

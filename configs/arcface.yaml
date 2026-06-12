@@ -17,15 +17,15 @@ max_images_per_identity: 30
 split_seed: 42
 
 # --- Training loop ---
-epochs: 32
+epochs: 30
 batch_size: 32
-early_stopping_patience: 10
+early_stopping_patience: 15
 
 # --- Optimizer: SGD + MultiStepLR ---
-backbone_lr: 1.0e-4
+backbone_lr: 5.0e-5        # Lower to preserve pretrained face features
 arcface_lr: 1.0e-3
 weight_decay: 5.0e-4
-lr_milestones: [20, 28]
+lr_milestones: [8, 14]     # Drop LR early when model typically plateaus
 lr_decay: 0.1
 
 # --- Backbone ---

@@ -1,23 +1,22 @@
 # Core Deep Learning
 torch>=2.0.0
+torchvision>=0.15.0
 
 # Model Architecture
-timm>=0.9.0             # Required for EfficientNetV2 S/M/L variants
-
-# Face Detection & Alignment
-facenet-pytorch>=2.5.3  # Required for GPU-accelerated MTCNN
+facenet-pytorch>=2.5.3      # InceptionResnetV1 backbone + MTCNN face detection
 
 # Metrics & Evaluation
-scikit-learn>=1.2.0     # Required for calculating FAR, FRR, EER, and ROC
-pandas>=2.0.0           # Required for exporting the final comparison table (CSV)
+scikit-learn>=1.2.0         # FAR, FRR, EER, ROC computation
+pandas>=2.0.0               # Comparison table export (CSV)
 
 # Visualization & Image Processing
-opencv-python>=4.8.0    # Required for the live webcam demo and image handling
-matplotlib>=3.7.0       # Required for plotting ROC curves and Visual Error Analysis
+matplotlib>=3.7.0           # ROC curves, FAR/FRR plots
+Pillow>=9.0.0               # Image loading and preprocessing
+
+# Web Demo
+flask>=3.0.0                # Web server for browser-based demo (demo/app.py)
 
 # Utilities
-pyyaml>=6.0             # Required for loading the 6 training configuration files
-tqdm>=4.65.0            # Required for training loop progress bars
-
-ipykernel>=6.0.0          # Required for running Jupyter notebooks
-jupyterlab>=3.0.0         # Required for interactive development and visualization
+pyyaml>=6.0                 # YAML config loading
+tqdm>=4.65.0                # Training progress bars
+numpy>=1.24.0

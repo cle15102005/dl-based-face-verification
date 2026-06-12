@@ -45,7 +45,7 @@ from src.data.dataset import (
 )
 import torch.nn.functional as F
 
-from src.models.backbone import EfficientNetV2Backbone, InceptionResnetV1Backbone
+from src.models.backbone import InceptionResnetV1Backbone
 from src.models.losses import ArcFaceLoss, HardPairContrastiveLoss
 from src.training.train_utils import (
     EarlyStopping,
@@ -126,19 +126,11 @@ def train_arcface(config_path):
     )
 
     # --- Model ---
-    if config.get("backbone_type") == "inception":
-        backbone = InceptionResnetV1Backbone(
-            unfreeze_ratio=config["unfreeze_ratio"],
-            dropout=config["dropout"],
-            pretrained="casia-webface",
-        ).to(device)
-    else:
-        backbone = EfficientNetV2Backbone(
-            variant=variant,
-            unfreeze_ratio=config["unfreeze_ratio"],
-            dropout=config["dropout"],
-            embedding_dim=config.get("embedding_dim", 512),
-        ).to(device)
+    backbone = InceptionResnetV1Backbone(
+        unfreeze_ratio=config["unfreeze_ratio"],
+        dropout=config["dropout"],
+        pretrained="vggface2",
+    ).to(device)
     backbone.set_train_mode(freeze_batchnorm=freeze_bn)
 
     num_classes = len(train_dataset.label_to_indices)

@@ -26,7 +26,6 @@ Evaluated on the standard LFW 6,000-pair benchmark.
 | **Test** | LFW | 6,000 official eval pairs — final benchmark (held-out) |
 
 ```
-archive/casia-webface/          # MXNet RecordIO (train.rec, train.idx, train.lst)
 data/raw/lfw/                   # LFW deepfunneled + pairs.csv
 data/raw/calfw/calfw/           # CALFW images + pairs.csv
 data/raw/cplfw/cplfw/           # CPLFW images + pairs.csv
@@ -85,7 +84,6 @@ python scripts/resize_to_160.py
 ```
 
 Output: `data/processed/{lfw,calfw,cplfw,casia-webface}/I/`  
-After this step, the `S/` folders can be deleted.
 
 ### Step 4a — Train Baseline (Siamese + CosinePairLoss)
 
@@ -129,7 +127,7 @@ python scripts/error_analysis.py
 ```
 Input (160×160 RGB)
   ↓  ImageNet-norm → [-1,1] conversion
-InceptionResnetV1 (pretrained: CASIA-WebFace)
+InceptionResnetV1
   ↓  512-d features
 Dropout(0.1)
   ↓
@@ -145,7 +143,6 @@ CosinePairLoss                (s=64, m=0.5)
 | Parameter | Baseline | ArcFace |
 |---|---|---|
 | Backbone | InceptionResnetV1 | InceptionResnetV1 |
-| Pretrained | CASIA-WebFace | CASIA-WebFace |
 | Input size | 160px | 160px |
 | Epochs | 30 | 32 |
 | Optimizer | AdamW (lr=1e-4) | SGD (lr=1e-4 backbone, 1e-3 head) |
@@ -154,4 +151,4 @@ CosinePairLoss                (s=64, m=0.5)
 | Batch size | 64 pairs | 32 (PK: 32 ids × 4 imgs) |
 | Early stopping | val EER (patience=8) | val EER (patience=10) |
 
-**Target:** ArcFace EER < 3% on LFW 6,000-pair benchmark.
+**Target:** ArcFace EER < 5% on LFW 6,000-pair benchmark.

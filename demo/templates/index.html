@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Face Verification Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f0f1a;
+      color: #e0e0f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #a78bfa;
+      margin-bottom: 4px;
+      letter-spacing: 0.5px;
+    }
+
+    .subtitle {
+      font-size: 0.85rem;
+      color: #6b7280;
+      margin-bottom: 32px;
+    }
+
+    .card {
+      background: #1a1a2e;
+      border: 1px solid #2d2d4e;
+      border-radius: 16px;
+      padding: 24px;
+      width: 100%;
+      max-width: 900px;
+    }
+
+    .columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .panel-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #6b7280;
+    }
+
+    .video-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4/3;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #0d0d1a;
+      border: 2px solid #2d2d4e;
+    }
+
+    video, canvas.preview {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    canvas.preview { display: none; position: absolute; top: 0; left: 0; }
+
+    .overlay-label {
+      position: absolute;
+      top: 10px; left: 10px;
+      background: rgba(0,0,0,0.55);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #a78bfa;
+    }
+
+    .capture-hint {
+      position: absolute;
+      bottom: 10px;
+      width: 100%;
+      text-align: center;
+      font-size: 0.7rem;
+      color: #9ca3af;
+    }
+
+    button {
+      width: 100%;
+      padding: 11px;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.3px;
+    }
+
+    .btn-enroll {
+      background: #7c3aed;
+      color: white;
+    }
+    .btn-enroll:hover { background: #6d28d9; }
+    .btn-enroll:disabled { background: #3b1f7a; color: #6b7280; cursor: not-allowed; }
+
+    .btn-verify {
+      background: #0ea5e9;
+      color: white;
+    }
+    .btn-verify:hover { background: #0284c7; }
+    .btn-verify:disabled { background: #0c3a52; color: #6b7280; cursor: not-allowed; }
+
+    .btn-reset {
+      width: auto;
+      padding: 8px 20px;
+      background: transparent;
+      border: 1px solid #374151;
+      color: #9ca3af;
+      font-size: 0.8rem;
+      border-radius: 8px;
+    }
+    .btn-reset:hover { border-color: #6b7280; color: #e0e0f0; }
+
+    /* Result */
+    #result {
+      display: none;
+      border-radius: 12px;
+      padding: 20px 24px;
+      text-align: center;
+      margin-top: 8px;
+      border: 2px solid transparent;
+      transition: all 0.3s;
+    }
+    #result.match {
+      background: #052e16;
+      border-color: #16a34a;
+    }
+    #result.reject {
+      background: #2d0a0a;
+      border-color: #dc2626;
+    }
+
+    .result-decision {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: 2px;
+      margin-bottom: 8px;
+    }
+    .match .result-decision { color: #4ade80; }
+    .reject .result-decision { color: #f87171; }
+
+    .result-score {
+      font-size: 0.95rem;
+      color: #9ca3af;
+    }
+
+    .score-bar-wrap {
+      margin: 12px auto;
+      width: 80%;
+      max-width: 300px;
+      background: #1f2937;
+      border-radius: 99px;
+      height: 8px;
+      position: relative;
+    }
+    .score-bar {
+      height: 100%;
+      border-radius: 99px;
+      transition: width 0.5s ease;
+    }
+    .match .score-bar { background: #4ade80; }
+    .reject .score-bar { background: #f87171; }
+
+    .threshold-tick {
+      position: absolute;
+      top: -4px;
+      width: 2px;
+      height: 16px;
+      background: #facc15;
+      border-radius: 1px;
+    }
+
+    .status-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 16px;
+      border-top: 1px solid #2d2d4e;
+      font-size: 0.78rem;
+      color: #6b7280;
+      margin-top: 16px;
+    }
+
+    .badge {
+      background: #1f2937;
+      border: 1px solid #374151;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 0.72rem;
+    }
+
+    .enrolled-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #374151;
+      display: inline-block;
+      margin-right: 6px;
+    }
+    .enrolled-dot.active { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+
+    @media (max-width: 600px) {
+      .columns { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>Face Verification</h1>
+<p class="subtitle">Model: <strong>{{ model_name }}</strong> &nbsp;|&nbsp; Threshold: <strong>{{ "%.3f"|format(threshold) }}</strong></p>
+
+<div class="card">
+  <div class="columns">
+    <!-- Enroll panel -->
+    <div class="panel">
+      <span class="panel-title">Step 1 — Enroll</span>
+      <div class="video-wrap" id="enrollWrap">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas class="preview" id="enrollCanvas"></canvas>
+        <div class="overlay-label">LIVE</div>
+        <div class="capture-hint">Position face in frame</div>
+      </div>
+      <button class="btn-enroll" id="btnEnroll" onclick="enroll()">📸 Capture &amp; Enroll</button>
+    </div>
+
+    <!-- Verify panel -->
+    <div class="panel">
+      <span class="panel-title">Step 2 — Verify</span>
+      <div class="video-wrap">
+        <video id="video2" autoplay playsinline muted></video>
+        <canvas class="preview" id="verifyCanvas"></canvas>
+        <div class="overlay-label">LIVE</div>
+        <div class="capture-hint">Position face in frame</div>
+      </div>
+      <button class="btn-verify" id="btnVerify" onclick="verify()" disabled>🔍 Capture &amp; Verify</button>
+    </div>
+  </div>
+
+  <!-- Result -->
+  <div id="result">
+    <div class="result-decision" id="decision">—</div>
+    <div class="score-bar-wrap">
+      <div class="score-bar" id="scoreBar" style="width:0%"></div>
+      <div class="threshold-tick" id="threshTick"></div>
+    </div>
+    <div class="result-score" id="scoreText"></div>
+  </div>
+
+  <!-- Bottom bar -->
+  <div class="status-bar">
+    <span>
+      <span class="enrolled-dot" id="enrollDot"></span>
+      <span id="enrollStatus">Not enrolled</span>
+    </span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="badge" id="deviceBadge">CPU</span>
+      <button class="btn-reset" onclick="resetDemo()">↺ Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const THRESHOLD = {{ threshold }};
+  let stream = null;
+  let enrolled = false;
+
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+      document.getElementById('video').srcObject = stream;
+      document.getElementById('video2').srcObject = stream;
+    } catch (e) {
+      alert('Camera access denied: ' + e.message);
+    }
+  }
+
+  function captureFrame(videoEl, canvasEl) {
+    const v = document.getElementById(videoEl);
+    const c = document.getElementById(canvasEl);
+    c.width = v.videoWidth || 640;
+    c.height = v.videoHeight || 480;
+    c.getContext('2d').drawImage(v, 0, 0);
+    c.style.display = 'block';
+    return c.toDataURL('image/jpeg', 0.9);
+  }
+
+  async function enroll() {
+    const btn = document.getElementById('btnEnroll');
+    btn.disabled = true;
+    btn.textContent = 'Enrolling…';
+
+    const imgData = captureFrame('video', 'enrollCanvas');
+    try {
+      const res = await fetch('/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: imgData })
+      });
+      const data = await res.json();
+      if (data.status === 'enrolled') {
+        enrolled = true;
+        document.getElementById('enrollDot').classList.add('active');
+        document.getElementById('enrollStatus').textContent = 'Face enrolled ✓';
+        document.getElementById('btnVerify').disabled = false;
+        btn.textContent = '✓ Re-Enroll';
+      }
+    } catch (e) {
+      alert('Enroll failed: ' + e);
+    }
+    btn.disabled = false;
+  }
+
+  async function verify() {
+    const btn = document.getElementById('btnVerify');
+    btn.disabled = true;
+    btn.textContent = 'Verifying…';
+
+    const imgData = captureFrame('video2', 'verifyCanvas');
+    try {
+      const res = await fetch('/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: imgData })
+      });
+      const data = await res.json();
+      showResult(data);
+    } catch (e) {
+      alert('Verify failed: ' + e);
+    }
+    btn.disabled = false;
+    btn.textContent = '🔍 Capture & Verify';
+  }
+
+  function showResult(data) {
+    const box = document.getElementById('result');
+    box.style.display = 'block';
+    box.className = data.match ? 'match' : 'reject';
+
+    document.getElementById('decision').textContent = data.match ? '✓  MATCH' : '✗  REJECT';
+    document.getElementById('scoreText').textContent =
+      `Similarity: ${data.score.toFixed(4)}  |  Threshold: ${data.threshold.toFixed(4)}`;
+
+    const pct = Math.min(Math.max(data.score, 0), 1) * 100;
+    document.getElementById('scoreBar').style.width = pct + '%';
+    document.getElementById('threshTick').style.left = (THRESHOLD * 100) + '%';
+
+    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  async function resetDemo() {
+    await fetch('/reset', { method: 'POST' });
+    enrolled = false;
+    document.getElementById('enrollDot').classList.remove('active');
+    document.getElementById('enrollStatus').textContent = 'Not enrolled';
+    document.getElementById('btnVerify').disabled = true;
+    document.getElementById('btnEnroll').textContent = '📸 Capture & Enroll';
+    document.getElementById('result').style.display = 'none';
+    document.getElementById('enrollCanvas').style.display = 'none';
+    document.getElementById('verifyCanvas').style.display = 'none';
+  }
+
+  startCamera();
+</script>
+</body>
+</html>

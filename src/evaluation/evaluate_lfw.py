@@ -28,7 +28,7 @@ from src.evaluation.metrics import (
     plot_far_frr_vs_threshold,
     plot_roc_curve,
 )
-from src.models.backbone import EfficientNetV2Backbone, InceptionResnetV1Backbone
+from src.models.backbone import InceptionResnetV1Backbone
 from src.models.siamese import SiameseNetwork
 from src.training.train_utils import (
     extract_backbone_pair_similarities,
@@ -52,18 +52,11 @@ def load_yaml_config(relative_path):
 
 
 def build_model(config, loss_type, device):
-    if config.get("backbone_type") == "inception":
-        backbone = InceptionResnetV1Backbone(
-            unfreeze_ratio=config["unfreeze_ratio"],
-            dropout=config["dropout"],
-            pretrained=None,  # weights loaded from checkpoint
-        )
-    else:
-        backbone = EfficientNetV2Backbone(
-            variant=config["variant"],
-            unfreeze_ratio=config["unfreeze_ratio"],
-            dropout=config["dropout"],
-        )
+    backbone = InceptionResnetV1Backbone(
+        unfreeze_ratio=config["unfreeze_ratio"],
+        dropout=config["dropout"],
+        pretrained=None,  # weights loaded from checkpoint
+    )
     if loss_type == "contrastive":
         return SiameseNetwork(backbone).to(device), True
     return backbone.to(device), False

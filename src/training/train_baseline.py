@@ -30,7 +30,7 @@ from src.data.dataset import (
     WebFacePairsDataset,
     load_validation_pairs,
 )
-from src.models.backbone import EfficientNetV2Backbone, InceptionResnetV1Backbone
+from src.models.backbone import InceptionResnetV1Backbone
 from src.models.losses import CosinePairLoss
 from src.models.siamese import SiameseNetwork
 from src.training.train_utils import (
@@ -81,19 +81,11 @@ def train_baseline(config_path):
         **loader_kwargs,
     )
 
-    if config.get("backbone_type") == "inception":
-        backbone = InceptionResnetV1Backbone(
-            unfreeze_ratio=config["unfreeze_ratio"],
-            dropout=config["dropout"],
-            pretrained="casia-webface",
-        )
-    else:
-        backbone = EfficientNetV2Backbone(
-            variant=variant,
-            unfreeze_ratio=config["unfreeze_ratio"],
-            dropout=config["dropout"],
-            embedding_dim=config.get("embedding_dim", 512),
-        )
+    backbone = InceptionResnetV1Backbone(
+        unfreeze_ratio=config["unfreeze_ratio"],
+        dropout=config["dropout"],
+        pretrained="vggface2",
+    )
     model = SiameseNetwork(backbone).to(device)
     criterion = CosinePairLoss(
         pos_threshold=config.get("cosine_pos_threshold", 0.5),

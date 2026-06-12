@@ -31,7 +31,7 @@ from src.data.dataset import (
     load_validation_pairs,
 )
 from src.models.backbone import EfficientNetV2Backbone
-from src.models.losses import ContrastiveLoss
+from src.models.losses import CosinePairLoss
 from src.models.siamese import SiameseNetwork
 from src.training.train_utils import (
     EarlyStopping,
@@ -85,9 +85,13 @@ def train_baseline(config_path):
         variant=variant,
         unfreeze_ratio=config["unfreeze_ratio"],
         dropout=config["dropout"],
+        embedding_dim=config.get("embedding_dim", 512),
     )
     model = SiameseNetwork(backbone).to(device)
-    criterion = ContrastiveLoss(margin=config["contrastive_margin"])
+    criterion = CosinePairLoss(
+        pos_threshold=config.get("cosine_pos_threshold", 0.5),
+        neg_threshold=config.get("cosine_neg_threshold", 0.3),
+    )
     optimizer = optim.AdamW(
         model.parameters(),
         lr=config["learning_rate"],
@@ -114,7 +118,7 @@ def train_baseline(config_path):
             img1, img2, labels = img1.to(device), img2.to(device), labels.to(device)
             optimizer.zero_grad()
             emb_a, emb_b, _ = model(img1, img2)
-            loss = criterion(emb_a, emb_b, labels)
+            loss = criterion(emb_a, emb_b, labels)  # CosinePairLoss — same metric as Val EER
             loss.backward()
             optimizer.step()
             total_loss += loss.item()

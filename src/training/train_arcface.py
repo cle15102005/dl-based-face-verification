@@ -36,7 +36,7 @@ from src.data.dataset import (
 )
 from src.data.hard_pair_mining import HardPairMiner
 from src.models.backbone import EfficientNetV2Backbone
-from src.models.losses import ArcFaceLoss, ContrastiveLoss, HardPairContrastiveLoss
+from src.models.losses import ArcFaceLoss, CosinePairLoss, HardPairContrastiveLoss
 from src.training.train_utils import (
     EarlyStopping,
     dataloader_kwargs,
@@ -110,6 +110,7 @@ def train_arcface(config_path):
         variant=variant,
         unfreeze_ratio=config["unfreeze_ratio"],
         dropout=config["dropout"],
+        embedding_dim=config.get("embedding_dim", 512),
     ).to(device)
     backbone.set_train_mode(freeze_batchnorm=freeze_bn)
 
@@ -121,7 +122,10 @@ def train_arcface(config_path):
         m=config["arcface_margin"],
     ).to(device)
 
-    contrastive_loss = ContrastiveLoss(margin=config["contrastive_margin"])
+    contrastive_loss = CosinePairLoss(
+        pos_threshold=config.get("cosine_pos_threshold", 0.5),
+        neg_threshold=config.get("cosine_neg_threshold", 0.0),
+    )
     hard_miner = HardPairMiner()
     hard_pair_loss = HardPairContrastiveLoss(margin=config["contrastive_margin"])
     mining_weight = config["hard_mining_weight"] if config["mining_strategy"] == "hard" else 0.0

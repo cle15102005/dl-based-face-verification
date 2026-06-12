@@ -1,9 +1,10 @@
 """
 Loss functions for baseline and advanced face verification training.
 
-  - ContrastiveLoss:         baseline Siamese models (margin=1.0).
-  - ArcFaceLoss:             advanced models (Additive Angular Margin, s=64, m=0.5).
-  - HardPairContrastiveLoss: auxiliary loss on hard-mined pairs during ArcFace training.
+  - ContrastiveLoss:         baseline Siamese models (Euclidean, margin=1.0).
+  - CosinePairLoss:          verify auxiliary loss for ArcFace — same metric as val EER.
+  - ArcFaceLoss:             advanced models (Additive Angular Margin, s=32, m=0.5).
+  - HardPairContrastiveLoss: auxiliary hard-mining loss inside ArcFace PK batch.
 """
 
 import torch
@@ -36,6 +37,33 @@ class ContrastiveLoss(nn.Module):
             + (1 - label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)
         )
         return loss
+
+
+class CosinePairLoss(nn.Module):
+    """
+    Cosine-based pair loss — directly aligned with the cosine similarity used at val/test.
+
+    Positive pairs (same person):   penalize when cos < pos_threshold  (want cos > 0.5)
+    Negative pairs (different):     penalize when cos > neg_threshold  (want cos < 0.0)
+
+    The gap between pos_threshold (0.5) and neg_threshold (0.0) acts as a margin —
+    the model is not penalized for pairs already in the correct region.
+    This avoids the previous problem where margin=0 required negatives to be at cos≤0
+    while positives needed cos=1.0 — an unrealistically wide gap that collapsed training.
+    """
+
+    def __init__(self, pos_threshold: float = 0.5, neg_threshold: float = 0.0):
+        super().__init__()
+        self.pos_threshold = pos_threshold
+        self.neg_threshold = neg_threshold
+
+    def forward(self, emb_a: torch.Tensor, emb_b: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
+        cos = F.cosine_similarity(emb_a, emb_b, dim=1)
+        # same-person: penalize if cos < pos_threshold
+        pos_loss = torch.clamp(self.pos_threshold - cos, min=0.0) * label
+        # different-person: penalize if cos > neg_threshold
+        neg_loss = torch.clamp(cos - self.neg_threshold, min=0.0) * (1.0 - label)
+        return (pos_loss + neg_loss).mean()
 
 
 class ArcFaceLoss(nn.Module):

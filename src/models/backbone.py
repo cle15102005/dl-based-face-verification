@@ -23,23 +23,36 @@ class EfficientNetV2Backbone(nn.Module):
       Input image -> EfficientNetV2 (no classifier) -> Dropout(0.3) -> L2 normalize -> embedding
     """
 
-    def __init__(self, variant="s", unfreeze_ratio=0.3, dropout=0.3):
+    def __init__(self, variant="s", unfreeze_ratio=0.3, dropout=0.3, embedding_dim=512):
         """
         Args:
-            variant:        's', 'm', or 'l' — selects tf_efficientnetv2_{variant} from timm.
-            unfreeze_ratio: Fraction of layers to unfreeze (0.3 = last 30%).
-            dropout:        Dropout probability before embedding head (default 0.3).
+            variant:       's', 'm', or 'l' — selects tf_efficientnetv2_{variant} from timm.
+            unfreeze_ratio: Fraction of backbone layers to unfreeze (0.3 = last 30%).
+            dropout:       Dropout probability before the projection head.
+            embedding_dim: Output size of the projection head (default 512).
+                           A smaller, fully-trainable layer between the frozen backbone
+                           and ArcFace / pair losses. This layer adapts specifically to
+                           face verification regardless of how much backbone is unfrozen.
         """
         super().__init__()
         self.model_name = f"tf_efficientnetv2_{variant}"
+        self._embedding_dim = embedding_dim
 
         # Step 1: Load pretrained EfficientNetV2 with classifier head removed (num_classes=0)
         self.backbone = timm.create_model(self.model_name, pretrained=True, num_classes=0)
 
-        # Step 2: Dropout before embedding head (added — was missing in earlier version)
+        # Step 2: Dropout before projection head
         self.dropout = nn.Dropout(p=dropout)
 
-        # Step 3: Freeze early layers, unfreeze last portion for fine-tuning
+        # Step 3: Trainable projection head (1280 → embedding_dim).
+        # Always fully trainable — gives the model a dedicated component that can adapt
+        # to face verification even when most of the backbone is frozen.
+        self.embedding_head = nn.Sequential(
+            nn.Linear(self.backbone.num_features, embedding_dim, bias=False),
+            nn.BatchNorm1d(embedding_dim),
+        )
+
+        # Step 4: Freeze early backbone layers, unfreeze last portion for fine-tuning
         self._freeze_layers(unfreeze_ratio)
 
     def _freeze_layers(self, unfreeze_ratio):
@@ -59,20 +72,22 @@ class EfficientNetV2Backbone(nn.Module):
 
     @property
     def embedding_dim(self):
-        """Return feature dimension (1280 for all EfficientNetV2 variants)."""
-        return self.backbone.num_features
+        """Output embedding dimension (after projection head)."""
+        return self._embedding_dim
 
     def forward(self, x):
         """
         Forward pass: extract L2-normalized embedding.
 
         Steps:
-          1. Extract raw features from EfficientNetV2 backbone.
-          2. Apply dropout (active during training only).
-          3. L2-normalize so cosine similarity equals dot product.
+          1. Extract raw 1280-dim features from EfficientNetV2 backbone.
+          2. Apply dropout.
+          3. Project to embedding_dim via trainable linear + BN head.
+          4. L2-normalize so cosine similarity equals dot product.
         """
         features = self.backbone(x)
         features = self.dropout(features)
+        features = self.embedding_head(features)
         embeddings = F.normalize(features, p=2, dim=1)
         return embeddings
 

@@ -1,32 +1,63 @@
-# Train: CASIA-WebFace | Val: CALFW+CPLFW | Test: LFW
-variant: s
+# ─────────────────────────────────────────────────────────────
+# ArcFace S  —  ArcFace + Hard Mining + Verify  (EfficientNetV2-S)
+# Train: CASIA-WebFace identity images (PK batches) + WebFace pairs
+# Val  : CALFW + CPLFW eval pairs
+# Test : LFW only (evaluate_lfw.py)
+# ─────────────────────────────────────────────────────────────
+
+# --- Model identity ---
+variant: s                    # EfficientNetV2-Small: input 300px
 loss_type: arcface
 checkpoint_name: arcface_s
 input_size: 300
-batch_size: 16
-learning_rate: 1.0e-4
-backbone_lr: 5.0e-6
-arcface_lr: 1.0e-4
-weight_decay: 5.0e-4
-verification_weight: 0.2
-webface_pairs_per_epoch: 10000
-freeze_batchnorm: true
-epochs: 30
-dropout: 0.1
-unfreeze_ratio: 0.1
-early_stopping_patience: 8
-arcface_scale: 64.0
-arcface_margin: 0.5
-contrastive_margin: 1.0
-p_identities: 16
-k_images: 4
-hard_mining_weight: 0.05
-mining_strategy: hard
-min_images: 2
-split_seed: 42
+
+# --- Data ---
 processed_data_dir: data/processed
-lfw_test_augmentation: true
+max_train_identities: 2000           # CASIA-WebFace identities used for ArcFace classification
+max_images_per_identity: 20          # Max images per identity (2000×20 = 40k total)
+webface_pairs_per_epoch: 10000       # Random WebFace pairs for the verify auxiliary loss
+split_seed: 42
+
+# --- Training loop ---
+epochs: 30
+batch_size: 16                # Batch size for verify pairs and val — ArcFace uses PK sampler (p×k=64)
+early_stopping_patience: 8    # More patience than baseline since ArcFace converges slower
+
+# --- Optimizer (two separate LRs) ---
+learning_rate: 1.0e-4         # Fallback default (not directly used)
+backbone_lr: 5.0e-5           # LR for EfficientNet unfrozen layers — small to preserve pretrained weights
+arcface_lr: 1.0e-4            # LR for ArcFace head + embedding projection head — larger, learning from scratch
+weight_decay: 5.0e-4
+
+# --- Backbone ---
+embedding_dim: 512            # Projection head output: Linear(1280→512), always trainable
+dropout: 0.1                  # Lower than baseline — ArcFace already regularizes via classification
+unfreeze_ratio: 0.3           # Unfreeze last 30% of backbone parameters for fine-tuning
+freeze_batchnorm: true        # Keep BatchNorm in eval mode — batch size 16 too small to re-estimate BN stats
+
+# --- ArcFace loss:  total = arcface + verify_weight×verify + mining_weight×hard_mining ---
+arcface_scale: 16.0           # s: multiplier on logits before cross-entropy
+                              # lower s → smaller arcface loss value → lower ratio vs verify
+                              # s=16 → arcface≈11, verify≈0.49 → ratio≈22:1 (was 115:1 at s=64)
+arcface_margin: 0.5           # m: angular margin added to target class cos(θ+m)
+                              # pushes same-person embeddings tighter around their class center
+
+# --- Verify auxiliary loss (CosinePairLoss) ---
+verification_weight: 1.0      # Weight of verify loss in total_loss — raised to 1.0 to balance with arcface
+                              # total = arcface(≈11) + 1.0×verify(≈0.49) → ratio ≈ 22:1
+cosine_pos_threshold: 0.5     # same-person: penalize if cosine < 0.5
+cosine_neg_threshold: 0.3     # diff-person:  penalize if cosine > 0.3 (raised from 0.0 — was causing both pos/neg to crash toward 0)
+
+# --- Hard pair mining (inside each PK batch) ---
+p_identities: 16              # P: number of identities per ArcFace batch
+k_images: 4                   # K: images per identity → batch = P×K = 64 images
+hard_mining_weight: 0.1       # Weight of hard pair loss — finds hardest pos/neg within the 64-image batch
+mining_strategy: hard         # Use hardest positive + hardest negative per sample
+min_images: 2                 # Skip identities with fewer than 2 images (need at least 1 positive pair)
+
+# --- Evaluation ---
+lfw_test_augmentation: true   # Horizontal-flip TTA on LFW test set
+
+# --- DataLoader speed ---
 num_workers: 8
 prefetch_factor: 2
-max_train_identities: 2000
-max_images_per_identity: 20

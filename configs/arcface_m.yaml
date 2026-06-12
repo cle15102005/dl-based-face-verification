@@ -1,32 +1,59 @@
-# Train: CASIA-WebFace | Val: CALFW+CPLFW | Test: LFW
+# ─────────────────────────────────────────────────────────────
+# ArcFace M  —  ArcFace + Hard Mining + Verify  (EfficientNetV2-M)
+# Train: CASIA-WebFace identity images (PK batches) + WebFace pairs
+# Val  : CALFW + CPLFW eval pairs
+# Test : LFW only (evaluate_lfw.py)
+# ─────────────────────────────────────────────────────────────
+
+# --- Model identity ---
 variant: m
 loss_type: arcface
 checkpoint_name: arcface_m
 input_size: 384
-batch_size: 8
-learning_rate: 1.0e-4
-backbone_lr: 5.0e-6
-arcface_lr: 1.0e-4
-weight_decay: 5.0e-4
-verification_weight: 0.2
-webface_pairs_per_epoch: 10000
-freeze_batchnorm: true
-epochs: 30
-dropout: 0.1
-unfreeze_ratio: 0.05
-early_stopping_patience: 8
-arcface_scale: 64.0
-arcface_margin: 0.5
-contrastive_margin: 1.0
-p_identities: 8
-k_images: 4
-hard_mining_weight: 0.05
-mining_strategy: hard
-min_images: 2
-split_seed: 42
+
+# --- Data ---
 processed_data_dir: data/processed
-lfw_test_augmentation: true
-num_workers: 8
-prefetch_factor: 2
 max_train_identities: 2000
 max_images_per_identity: 20
+webface_pairs_per_epoch: 10000
+split_seed: 42
+
+# --- Training loop ---
+epochs: 30
+batch_size: 8                 # Halved vs S — 384px images use more memory
+early_stopping_patience: 8
+
+# --- Optimizer ---
+learning_rate: 1.0e-4
+backbone_lr: 5.0e-5
+arcface_lr: 1.0e-4
+weight_decay: 5.0e-4
+
+# --- Backbone ---
+embedding_dim: 512
+dropout: 0.1
+unfreeze_ratio: 0.3
+freeze_batchnorm: true
+
+# --- ArcFace loss ---
+arcface_scale: 16.0           # Same rationale as S: keeps arcface≈11, ratio≈22:1 with verify
+arcface_margin: 0.5
+
+# --- Verify auxiliary loss ---
+verification_weight: 1.0
+cosine_pos_threshold: 0.5
+cosine_neg_threshold: 0.3
+
+# --- Hard pair mining ---
+p_identities: 8               # Halved vs S to fit 384px images in memory (8×4=32 images/batch)
+k_images: 4
+hard_mining_weight: 0.1
+mining_strategy: hard
+min_images: 2
+
+# --- Evaluation ---
+lfw_test_augmentation: true
+
+# --- DataLoader speed ---
+num_workers: 8
+prefetch_factor: 2

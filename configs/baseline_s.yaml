@@ -1,21 +1,44 @@
-# Train: CASIA-WebFace | Val: CALFW+CPLFW | Test: LFW
-variant: s
-loss_type: contrastive
-checkpoint_name: baseline_s
-input_size: 300
-batch_size: 16
-learning_rate: 1.0e-4
-weight_decay: 5.0e-4
-epochs: 30
-dropout: 0.3
-unfreeze_ratio: 0.3
-early_stopping_patience: 5
-contrastive_margin: 1.0
-split_seed: 42
-processed_data_dir: data/processed
-webface_pairs_per_epoch: 10000
-lfw_test_augmentation: true
-num_workers: 8
-prefetch_factor: 2
-max_train_identities: 2000
-max_images_per_identity: 20
+# ─────────────────────────────────────────────────────────────
+# Baseline S  —  Siamese + Contrastive Loss  (EfficientNetV2-S)
+# Train: CASIA-WebFace random pairs
+# Val  : CALFW + CPLFW eval pairs
+# Test : LFW only (evaluate_lfw.py)
+# ─────────────────────────────────────────────────────────────
+
+# --- Model identity ---
+variant: s                    # EfficientNetV2 size: s=Small(300px) m=Medium(384px) l=Large(480px)
+loss_type: contrastive        # Training loss family (used by evaluate_lfw to pick the right model wrapper)
+checkpoint_name: baseline_s   # Saved to outputs/checkpoints/baseline_s.pt
+input_size: 300               # Input image resolution — must match variant s
+
+# --- Data ---
+processed_data_dir: data/processed   # Root of all preprocessed image folders
+max_train_identities: 2000           # How many CASIA-WebFace identities to train on
+max_images_per_identity: 20          # Max images kept per identity (40k total)
+webface_pairs_per_epoch: 10000       # Random same/diff pairs sampled from WebFace each epoch
+split_seed: 42                       # Random seed for pair sampling — keep fixed for reproducibility
+
+# --- Training loop ---
+epochs: 30                    # Maximum number of training epochs
+batch_size: 16                # Pairs per batch fed to the Siamese network
+early_stopping_patience: 5    # Stop if Val EER does not improve for this many consecutive epochs
+
+# --- Optimizer ---
+learning_rate: 1.0e-4         # AdamW LR for all parameters (Siamese uses one optimizer)
+weight_decay: 5.0e-4          # L2 regularization — penalizes large weights, reduces overfitting
+
+# --- Backbone (EfficientNetV2) ---
+embedding_dim: 512            # Output size of projection head Linear(1280→512)
+dropout: 0.3                  # Dropout before projection head — higher than ArcFace because no ArcFace regularization
+unfreeze_ratio: 0.3           # Fraction of backbone parameters to unfreeze (last 30% = 135/450 layers)
+
+# --- Cosine pair loss (replaced Euclidean ContrastiveLoss — same metric as val EER) ---
+cosine_pos_threshold: 0.5     # same-person: penalize if cosine < 0.5
+cosine_neg_threshold: 0.3     # diff-person:  penalize if cosine > 0.3 → gap of 0.2 between targets
+
+# --- Evaluation ---
+lfw_test_augmentation: true   # Horizontal-flip TTA at test time on LFW (averages orig + flipped embedding)
+
+# --- DataLoader speed ---
+num_workers: 8                # Parallel image-loading processes (set to CPU core count - 1)
+prefetch_factor: 2            # Each worker prefetches 2 batches ahead to keep GPU fed

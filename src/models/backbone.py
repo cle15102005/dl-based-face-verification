@@ -1,9 +1,8 @@
 """
 Backbone wrapper for face embedding extraction.
 
-  InceptionResnetV1Backbone — facenet-pytorch InceptionResnetV1, pretrained on
-                               CASIA-WebFace or VGGFace2 for face recognition.
-                               Input: 160px. Outputs 512-dim L2-normalized embeddings.
+InceptionResnetV1Backbone — facenet-pytorch InceptionResnetV1, pretrained on VGGFace2 for face recognition.
+Input: 160px. Outputs 512-dim L2-normalized embeddings.
 """
 
 import torch

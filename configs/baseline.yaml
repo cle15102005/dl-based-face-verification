@@ -23,7 +23,7 @@ batch_size: 64
 early_stopping_patience: 8
 
 # --- Optimizer ---
-learning_rate: 1.0e-4
+learning_rate: 5.0e-5       # Lower LR — pretrained model needs fine steps
 weight_decay: 5.0e-4
 
 # --- Backbone ---
@@ -31,8 +31,12 @@ dropout: 0.1
 unfreeze_ratio: 0.3
 
 # --- Cosine pair loss ---
-cosine_pos_threshold: 0.5
-cosine_neg_threshold: 0.3
+# Pretrained VGGFace2 already satisfies pos>0.5 and neg<0.3 easily.
+# Raise the bar so the loss doesn't collapse immediately:
+#   pos_threshold=0.8 → want same-person similarity > 0.8 (was > 0.5)
+#   neg_threshold=0.5 → want diff-person similarity < 0.5 (was < 0.3)
+cosine_pos_threshold: 0.8
+cosine_neg_threshold: 0.5
 
 # --- Evaluation ---
 lfw_test_augmentation: true

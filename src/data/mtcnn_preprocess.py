@@ -145,6 +145,9 @@ def preprocess_and_split(datasets: list[str] | None = None):
     """
     Preprocess LFW / CALFW / CPLFW with MTCNN.
 
+    Saves directly to I/ (160px) — no intermediate up/down resize.
+    This matches the demo webcam pipeline exactly (MTCNN → 160px crop).
+
     Args:
         datasets: Subset to process, e.g. ["lfw", "calfw", "cplfw"]. Default: all three.
     """
@@ -154,8 +157,8 @@ def preprocess_and_split(datasets: list[str] | None = None):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Initializing MTCNN on device: {device}")
 
-    mtcnn = MTCNN(margin=20, keep_all=False, post_process=False, device=device)
-    variant_sizes = {variant.upper(): size for variant, size in VARIANT_INPUT_SIZES.items()}
+    mtcnn = MTCNN(image_size=160, margin=20, keep_all=False, post_process=False, device=device)
+    variant_sizes = {"I": 160}  # save directly to I/ at native 160px
 
     for dataset_name in datasets:
         preprocess_dataset(dataset_name, mtcnn, variant_sizes)

@@ -1,0 +1,55 @@
+# ArcFace Pure  —  InceptionResnetV1 + ArcFace Loss only (no hard pair mining)
+# Used to ablate the contribution of hard pair mining vs plain ArcFace.
+# Compare results with arcface.yaml (which adds HardPairContrastiveLoss).
+# Train: CASIA-WebFace identity images (PK batches)
+# Val  : CALFW + CPLFW eval pairs
+# Test : LFW only (evaluate_lfw.py)
+
+# --- Model identity ---
+variant: i
+backbone_type: inception
+loss_type: arcface
+checkpoint_name: arcface_pure
+input_size: 160
+
+# --- Data ---
+processed_data_dir: data/processed
+max_train_identities: 5000
+max_images_per_identity: 30
+split_seed: 42
+
+# --- Training loop ---
+epochs: 30
+batch_size: 32
+early_stopping_patience: 15
+
+# --- Optimizer: SGD + MultiStepLR ---
+backbone_lr: 5.0e-5
+arcface_lr: 1.0e-3
+weight_decay: 5.0e-4
+lr_milestones: [8, 14]
+lr_decay: 0.5
+
+# --- Backbone ---
+dropout: 0.1
+unfreeze_ratio: 0.3
+freeze_batchnorm: true
+
+# --- ArcFace loss ---
+arcface_scale: 64.0
+arcface_margin: 0.5
+
+# --- Hard pair mining: disabled for ablation ---
+hard_mining_weight: 0.0   # 0.0 = skip hard mining entirely, pure ArcFace only
+
+# --- PK batch sampler ---
+p_identities: 32
+k_images: 4
+min_images: 2
+
+# --- Evaluation ---
+lfw_test_augmentation: true
+
+# --- DataLoader ---
+num_workers: 8
+prefetch_factor: 2

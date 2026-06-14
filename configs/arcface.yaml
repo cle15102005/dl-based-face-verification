@@ -38,7 +38,20 @@ arcface_scale: 64.0
 arcface_margin: 0.5
 
 # --- Hard pair mining (auxiliary loss alongside ArcFace) ---
-hard_mining_weight: 0.1   # Weight of HardPairContrastiveLoss relative to ArcFace loss
+hard_mining_weight: 15.0    # Weight of HardPairContrastiveLoss relative to ArcFace loss
+                            # ArcFace loss scale ~30-50 (CrossEntropy on s=64 scaled logits)
+                            # HardPair loss scale ~0.2-0.6 (squared cosine terms)
+                            # weight=15 → hard mining ≈ 12% of total loss (meaningful)
+
+# Positive pairs (same person, hardest in batch):
+#   loss = (pos_threshold - cos)²
+#   No dead zone — always penalized. Hard positives always need pushing.
+hard_pair_pos_threshold: 1.0   # push cos(same person) → 1.0
+
+# Negative pairs (different person, hardest in batch):
+#   loss = clamp(cos - neg_threshold, min=0)²
+#   Only penalized if cos > neg_threshold (too similar to a different person).
+hard_pair_neg_threshold: 0.5   # push cos(diff person) < 0.5
 
 # --- PK batch sampler ---
 p_identities: 32

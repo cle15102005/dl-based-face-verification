@@ -120,31 +120,34 @@ class ArcFaceLoss(nn.Module):
 class HardPairContrastiveLoss(nn.Module):
     """
     Contrastive loss applied to hard-mined pairs within a batch.
-
     Used as auxiliary loss alongside ArcFaceLoss.
-    Emphasizes hard positives (same person, low similarity) and
-    hard negatives (different person, high similarity / lookalikes).
+
+    Positive loss (same person, hardest pair):
+      loss = (pos_target - cos)²
+      No dead zone — always penalized. Hard positives always need pushing.
+
+    Negative loss (different person, hardest pair):
+      loss = clamp(cos - neg_threshold, min=0)²
+      Only penalized if cos > neg_threshold (too similar to a different person).
     """
 
-    def __init__(self, margin=1.0):
-        super().__init__()
-        self.margin = margin
-
-    def forward(self, embeddings, hard_pos_idx, hard_neg_idx):
+    def __init__(self, pos_threshold: float = 1.0, neg_threshold: float = 0.5):
         """
         Args:
-            embeddings:    Batch embeddings         [batch, 1280].
-            hard_pos_idx:  Hardest positive index per sample [batch].
-            hard_neg_idx:  Hardest negative index per sample [batch].
+            pos_threshold: Target cosine for hard positive pairs. Default 1.0.
+            neg_threshold: Max allowed cosine for hard negative pairs. Default 0.5.
         """
+        super().__init__()
+        self.pos_threshold = pos_threshold
+        self.neg_threshold = neg_threshold
+
+    def forward(self, embeddings, hard_pos_idx, hard_neg_idx):
         embeddings = F.normalize(embeddings, p=2, dim=1)
 
         cos_pos = (embeddings * embeddings[hard_pos_idx]).sum(dim=1)
-        pos_loss = torch.pow(1.0 - cos_pos, 2).mean()
+        pos_loss = torch.pow(self.pos_threshold - cos_pos, 2).mean()
 
         cos_neg = (embeddings * embeddings[hard_neg_idx]).sum(dim=1)
-        # Euclidean margin on unit vectors: dist >= margin  <=>  cos <= 1 - margin^2 / 2
-        cos_threshold = 1.0 - 0.5 * (self.margin ** 2)
-        neg_loss = torch.pow(torch.clamp(cos_neg - cos_threshold, min=0.0), 2).mean()
+        neg_loss = torch.pow(torch.clamp(cos_neg - self.neg_threshold, min=0.0), 2).mean()
 
         return pos_loss + neg_loss

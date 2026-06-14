@@ -109,7 +109,7 @@ def load_one_model(checkpoint_name: str):
 
 def load_all_models():
     """Pre-load all available checkpoints."""
-    for name in ("arcface", "baseline"):
+    for name in ("arcface", "arcface_pure", "baseline"):
         ckpt = CHECKPOINTS_DIR / f"{name}.pt"
         if ckpt.exists():
             try:
@@ -165,7 +165,7 @@ def get_embedding(img: Image.Image, entry: dict):
 
 @app.route("/")
 def index():
-    available = [n for n in ("arcface", "baseline") if (CHECKPOINTS_DIR / f"{n}.pt").exists()]
+    available = [n for n in ("arcface", "arcface_pure", "baseline") if (CHECKPOINTS_DIR / f"{n}.pt").exists()]
     return render_template("index.html", available_models=available, device=str(_device))
 
 

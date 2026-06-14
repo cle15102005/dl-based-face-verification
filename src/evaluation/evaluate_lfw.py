@@ -40,8 +40,9 @@ from src.utils.paths import CHECKPOINTS_DIR, METRICS_DIR, ensure_output_dirs
 
 
 MODEL_CONFIGS = [
-    ("baseline", "configs/baseline.yaml", "contrastive"),
-    ("arcface",  "configs/arcface.yaml",  "arcface"),
+    ("baseline",     "configs/baseline.yaml",     "contrastive"),
+    ("arcface_pure", "configs/arcface_pure.yaml",  "arcface"),
+    ("arcface",      "configs/arcface.yaml",       "arcface"),
 ]
 
 

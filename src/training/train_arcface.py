@@ -141,8 +141,12 @@ def train_arcface(config_path):
         m=config["arcface_margin"],
     ).to(device)
 
-    hard_mining_weight = config.get("hard_mining_weight", 0.1)
-    hard_loss_fn = HardPairContrastiveLoss(margin=1.0).to(device)
+    hard_mining_weight = config.get("hard_mining_weight", 0.3)
+    use_hard_mining = hard_mining_weight > 0.0
+    hard_loss_fn = HardPairContrastiveLoss(
+        pos_threshold=config.get("hard_pair_pos_threshold", 1.0),
+        neg_threshold=config.get("hard_pair_neg_threshold", 0.5),
+    ).to(device) if use_hard_mining else None
 
     # --- Optimizer: SGD with two LR groups (paper: momentum=0.9, wd=5e-4) ---
     backbone_lr = config.get("backbone_lr", 1e-3)
@@ -172,7 +176,7 @@ def train_arcface(config_path):
         f"arcface_lr={arcface_lr}, backbone_lr={backbone_lr} | "
         f"milestones={milestones}, decay={lr_decay} | "
         f"s={config['arcface_scale']}, m={config['arcface_margin']} | "
-        f"hard_mining_weight={hard_mining_weight}"
+        f"hard_mining={'weight=' + str(hard_mining_weight) if use_hard_mining else 'disabled'}"
     )
 
     epochs = config["epochs"]
@@ -201,11 +205,13 @@ def train_arcface(config_path):
 
             arc_loss = arcface_loss(embeddings, labels)
 
-            # Hard pair mining: hardest positive + hardest negative in PK batch
-            hard_pos_idx, hard_neg_idx = mine_hard_pairs(embeddings, labels)
-            hard_loss = hard_loss_fn(embeddings, hard_pos_idx, hard_neg_idx)
-
-            loss = arc_loss + hard_mining_weight * hard_loss
+            if use_hard_mining:
+                hard_pos_idx, hard_neg_idx = mine_hard_pairs(embeddings, labels)
+                hard_loss = hard_loss_fn(embeddings, hard_pos_idx, hard_neg_idx)
+                loss = arc_loss + hard_mining_weight * hard_loss
+            else:
+                hard_loss = torch.tensor(0.0)
+                loss = arc_loss
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -219,17 +225,16 @@ def train_arcface(config_path):
             total_loss += loss.item()
             total_arcface_loss += arc_loss.item()
             total_hard_loss += hard_loss.item()
-            train_pbar.set_postfix(
-                arcface=f"{arc_loss.item():.4f}",
-                hard=f"{hard_loss.item():.4f}",
-                refresh=False,
-            )
+            postfix = {"arcface": f"{arc_loss.item():.4f}"}
+            if use_hard_mining:
+                postfix["hard"] = f"{hard_loss.item():.4f}"
+            train_pbar.set_postfix(**postfix, refresh=False)
 
         scheduler.step()
 
         avg_loss = total_loss / max(num_steps, 1)
         avg_arc = total_arcface_loss / max(num_steps, 1)
-        avg_hard = total_hard_loss / max(num_steps, 1)
+        avg_hard = total_hard_loss / max(num_steps, 1) if use_hard_mining else 0.0
         current_lr = scheduler.get_last_lr()
 
         backbone.eval()
@@ -245,7 +250,7 @@ def train_arcface(config_path):
         epoch_time = time.time() - start_time
         print(
             f"[INFO] Epoch [{epoch + 1:02d}/{epochs}] | "
-            f"Loss: {avg_loss:.4f} (arcface={avg_arc:.4f}, hard={avg_hard:.4f}) | "
+            f"Loss: {avg_loss:.4f} (arcface={avg_arc:.4f}" + (f", hard={avg_hard:.4f}" if use_hard_mining else "") + ") | "
             f"Val EER: {val_eer:.4f} (gap={val_stats['gap']:.4f}, "
             f"pos={val_stats['pos_mean']:.3f}, neg={val_stats['neg_mean']:.3f}) | "
             f"LR: {current_lr[1]:.2e} | "

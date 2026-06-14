@@ -84,7 +84,7 @@ def load_one_model(checkpoint_name: str):
     if csv_path.exists():
         import pandas as pd
         df = pd.read_csv(csv_path)
-        row = df[df["checkpoint"].str.contains(checkpoint_name)]
+        row = df[df["checkpoint"].apply(lambda x: Path(x).stem == checkpoint_name)]
         if not row.empty:
             threshold = float(row.iloc[0]["eer_threshold"])
 

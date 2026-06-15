@@ -52,6 +52,37 @@ def far_at_frr(scores: np.ndarray, labels: np.ndarray, target_frr: float = 0.01)
     return float(fpr[idx]), float(thresholds[idx])
 
 
+def frr_at_far(scores: np.ndarray, labels: np.ndarray, target_far: float = 0.01):
+    """
+    Compute FRR at a fixed FAR operating point (default 1%).
+
+    Security-relevant metric: given that only target_far% of impostors are
+    accepted, how many genuine pairs are rejected?
+    """
+    fpr, tpr, thresholds = roc_curve(labels, scores, pos_label=1)
+    fnr = 1 - tpr
+    idx = np.argmin(np.abs(fpr - target_far))
+    return float(fnr[idx]), float(thresholds[idx])
+
+
+def score_distribution_stats(scores: np.ndarray, labels: np.ndarray):
+    """Return statistics of genuine and impostor score distributions."""
+    genuine = scores[labels == 1]
+    impostor = scores[labels == 0]
+    return {
+        "genuine_mean":  float(np.mean(genuine)),
+        "genuine_std":   float(np.std(genuine)),
+        "genuine_min":   float(np.min(genuine)),
+        "genuine_p1":    float(np.percentile(genuine, 1)),   # 1st percentile
+        "genuine_p5":    float(np.percentile(genuine, 5)),   # 5th percentile
+        "impostor_mean": float(np.mean(impostor)),
+        "impostor_std":  float(np.std(impostor)),
+        "impostor_max":  float(np.max(impostor)),
+        "impostor_p95":  float(np.percentile(impostor, 95)), # 95th percentile
+        "impostor_p99":  float(np.percentile(impostor, 99)), # 99th percentile
+    }
+
+
 def plot_roc_curve(scores, labels, save_path: Path, title: str = "ROC Curve"):
     """Plot and save ROC curve. Output: outputs/metrics/{model_name}_roc.png."""
     fpr, tpr, _ = roc_curve(labels, scores, pos_label=1)

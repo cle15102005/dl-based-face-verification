@@ -25,15 +25,7 @@ data/processed/
 # 4. Model Checkpoints & Outputs
 outputs/checkpoints/*.pt
 outputs/checkpoints/*.pth
-outputs/metrics/*.csv
-outputs/error_cases/*.jpg
-outputs/error_cases/*.png
 outputs/results/*.log
-
-!outputs/checkpoints/.gitkeep
-!outputs/metrics/.gitkeep
-!outputs/error_cases/.gitkeep
-!outputs/results/.gitkeep
 
 # 5. OS Generated Files
 .DS_Store

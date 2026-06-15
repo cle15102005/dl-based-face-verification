@@ -1,0 +1,4 @@
+model,loss_type,variant,eer,eer_threshold,frr_at_far_1pct,latency_ms,lfw_tta,checkpoint
+InceptionResnetV1,contrastive,i,0.05234211403801267,0.506918728351593,0.08669556518839616,46.94688799965661,True,C:\Documents\IT_documents\20252\IT4432E_Bio\Project\dl-based-face-verification\outputs\checkpoints\baseline.pt
+InceptionResnetV1,arcface,i,0.043840391241524945,0.33123454451560974,0.05201733911303763,31.004829999874346,True,C:\Documents\IT_documents\20252\IT4432E_Bio\Project\dl-based-face-verification\outputs\checkpoints\arcface_pure.pt
+InceptionResnetV1,arcface,i,0.04184016894520394,0.7930746078491211,0.054684894964988295,33.002895999816246,True,C:\Documents\IT_documents\20252\IT4432E_Bio\Project\dl-based-face-verification\outputs\checkpoints\arcface.pt

@@ -24,9 +24,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.data.dataset import VerificationPairsDataset, load_lfw_test_pairs
 from src.evaluation.metrics import (
     compute_eer,
-    far_at_frr,
+    frr_at_far,
     plot_far_frr_vs_threshold,
     plot_roc_curve,
+    score_distribution_stats,
 )
 from src.models.backbone import InceptionResnetV1Backbone
 from src.models.siamese import SiameseNetwork
@@ -90,8 +91,57 @@ def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_di
 
     scores_arr = np.array(scores)
     labels_arr = np.array(labels)
+
     eer, eer_threshold, _, _, _ = compute_eer(scores_arr, labels_arr)
-    far_at_1pct_frr, _ = far_at_frr(scores_arr, labels_arr, target_frr=0.01)
+
+    # FRR@FAR1%  — threshold HIGH (reject 99% impostors), security operating point
+    frr_at_1pct_far, thr_at_far1 = frr_at_far(scores_arr, labels_arr, target_far=0.01)
+
+    # Score distributions
+    stats = score_distribution_stats(scores_arr, labels_arr)
+
+    genuine  = scores_arr[labels_arr == 1]
+    impostor = scores_arr[labels_arr == 0]
+
+    # ── Detailed diagnostic print ──────────────────────────────────────────
+    print(f"\n{'─' * 60}")
+    print(f"  Score distribution  ({checkpoint_name})")
+    print(f"{'─' * 60}")
+    print(f"  Genuine  ({len(genuine):5d} pairs)  "
+          f"min={stats['genuine_min']:.4f}  "
+          f"p1={stats['genuine_p1']:.4f}  "
+          f"p5={stats['genuine_p5']:.4f}  "
+          f"mean={stats['genuine_mean']:.4f}  "
+          f"std={stats['genuine_std']:.4f}")
+    print(f"  Impostor ({len(impostor):5d} pairs)  "
+          f"mean={stats['impostor_mean']:.4f}  "
+          f"std={stats['impostor_std']:.4f}  "
+          f"p95={stats['impostor_p95']:.4f}  "
+          f"p99={stats['impostor_p99']:.4f}  "
+          f"max={stats['impostor_max']:.4f}")
+
+    overlap = np.sum(impostor > stats["genuine_p5"]) / len(impostor) * 100
+    print(f"\n  Overlap: {overlap:.1f}% of impostors score ABOVE genuine 5th-percentile")
+
+    print(f"\n{'─' * 60}")
+    print(f"  Operating points  ({checkpoint_name})")
+    print(f"{'─' * 60}")
+    print(f"  EER              {eer*100:5.2f}%   @ threshold={eer_threshold:.4f}")
+    print(f"  FRR@FAR=1%       {frr_at_1pct_far*100:5.2f}%   @ threshold={thr_at_far1:.4f}"
+          f"  ← HIGH threshold, rejects 99% impostors")
+
+    # Spot-check around EER ± 0.2 / ± 0.3 (mirrors demo experience)
+    print(f"\n  Spot-check  (EER threshold ± offset)")
+    from sklearn.metrics import roc_curve as _roc
+    _fpr, _tpr, _thr = _roc(labels_arr, scores_arr, pos_label=1)
+    _fnr = 1 - _tpr
+    for offset in (-0.2, -0.1, 0.0, +0.1, +0.2, +0.3):
+        thr = eer_threshold + offset
+        idx = np.argmin(np.abs(_thr - thr))
+        print(f"    thr={thr:.3f} (+{offset:+.1f})  "
+              f"FAR={_fpr[idx]*100:5.2f}%  FRR={_fnr[idx]*100:5.2f}%")
+    print(f"{'─' * 60}")
+    # ──────────────────────────────────────────────────────────────────────
 
     if len(eval_dataset) > 0:
         sample_img1, sample_img2, _ = eval_dataset[0]
@@ -117,15 +167,15 @@ def evaluate_model(checkpoint_name, config_path, loss_type, device, processed_di
 
     backbone_label = "InceptionResnetV1" if config.get("backbone_type") == "inception" else f"EfficientNetV2-{config['variant'].upper()}"
     return {
-        "model": backbone_label,
-        "loss_type": loss_type,
-        "variant": config["variant"],
-        "eer": eer,
-        "eer_threshold": eer_threshold,
-        "far_at_frr_1pct": far_at_1pct_frr,
-        "latency_ms": latency_ms,
-        "lfw_tta": use_tta,
-        "checkpoint": str(checkpoint_path),
+        "model":             backbone_label,
+        "loss_type":         loss_type,
+        "variant":           config["variant"],
+        "eer":               eer,
+        "eer_threshold":     eer_threshold,
+        "frr_at_far_1pct":   frr_at_1pct_far,
+        "latency_ms":        latency_ms,
+        "lfw_tta":           use_tta,
+        "checkpoint":        str(checkpoint_path),
     }
 
 
@@ -147,7 +197,7 @@ def run_evaluation():
         if result:
             results.append(result)
             print(
-                f"[INFO] EER={result['eer']:.4f} | FAR@FRR1%={result['far_at_frr_1pct']:.4f} | "
+                f"[INFO] EER={result['eer']:.4f} | FRR@FAR1%={result['frr_at_far_1pct']:.4f} | "
                 f"Latency={result['latency_ms']:.2f}ms | TTA={result['lfw_tta']}"
             )
 
@@ -159,7 +209,12 @@ def run_evaluation():
     csv_path = METRICS_DIR / "comparison_table.csv"
     df.to_csv(csv_path, index=False)
     print(f"\n[INFO] Comparison table saved to: {csv_path}")
-    print(df[["model", "loss_type", "eer", "far_at_frr_1pct", "latency_ms", "lfw_tta"]].to_string(index=False))
+    print("\n" + "=" * 70)
+    print("  Final summary")
+    print("=" * 70)
+    cols = ["model", "loss_type", "eer", "eer_threshold", "frr_at_far_1pct", "latency_ms"]
+    print(df[cols].to_string(index=False, float_format="{:.4f}".format))
+    print("\n  frr_at_far_1pct : threshold HIGH, rejects 99% impostors → security operating point")
 
 
 if __name__ == "__main__":

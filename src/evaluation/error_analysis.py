@@ -27,39 +27,43 @@ import yaml
 from PIL import Image
 from torch.utils.data import DataLoader
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
+
+import pandas as pd
 
 from src.data.dataset import VerificationPairsDataset, load_lfw_test_pairs
 from src.evaluation.metrics import compute_eer
-from src.models.backbone import EfficientNetV2Backbone
+from src.models.backbone import InceptionResnetV1Backbone
 from src.models.siamese import SiameseNetwork
 from src.training.train_utils import extract_backbone_pair_similarities, extract_pair_similarities
 from src.utils.paths import CHECKPOINTS_DIR, ERROR_CASES_DIR, METRICS_DIR, ensure_output_dirs
 
+# Models available in the current pipeline
+MODEL_CONFIGS = [
+    ("baseline",     "configs/baseline.yaml",     "contrastive"),
+    ("arcface_pure", "configs/arcface_pure.yaml",  "arcface"),
+    ("arcface",      "configs/arcface.yaml",        "arcface"),
+]
+
 
 def load_best_model_from_metrics():
-    """
-    Select the best model from comparison_table.csv (lowest EER).
-
-    Raises FileNotFoundError if evaluate_lfw.py has not been run yet.
-    """
+    """Select the best model from comparison_table.csv (lowest EER)."""
     csv_path = METRICS_DIR / "comparison_table.csv"
     if not csv_path.exists():
         raise FileNotFoundError("Run evaluate_lfw.py first to generate comparison_table.csv")
 
-    import pandas as pd
     df = pd.read_csv(csv_path)
     best_row = df.loc[df["eer"].idxmin()]
     checkpoint = Path(best_row["checkpoint"])
-    return checkpoint, best_row["loss_type"], best_row["variant"]
+    return checkpoint, best_row["loss_type"], None
 
 
-def build_model(variant, loss_type, device, config):
-    backbone = EfficientNetV2Backbone(
-        variant=variant,
+def build_model(loss_type, device, config):
+    backbone = InceptionResnetV1Backbone(
         unfreeze_ratio=config["unfreeze_ratio"],
         dropout=config["dropout"],
+        pretrained=None,
     )
     if loss_type == "contrastive":
         return SiameseNetwork(backbone).to(device), True
@@ -93,14 +97,15 @@ def visualize_error_pair(img1_path, img2_path, score, threshold, label, save_pat
     plt.close()
 
 
-def _infer_model_info(checkpoint_path):
-    """Infer loss type and variant from checkpoint filename (e.g. arcface_s.pt -> arcface, s)."""
-    prefix, variant = checkpoint_path.stem.split("_", 1)
-    loss_type = "contrastive" if prefix == "baseline" else "arcface"
-    return loss_type, variant
+def _infer_loss_type(checkpoint_stem):
+    """Infer loss type from checkpoint name."""
+    for name, _, loss in MODEL_CONFIGS:
+        if name == checkpoint_stem:
+            return loss
+    return "contrastive" if checkpoint_stem == "baseline" else "arcface"
 
 
-def run_error_analysis(checkpoint=None, loss_type=None, variant=None, max_cases=10):
+def run_error_analysis(checkpoint=None, loss_type=None, max_cases=10):
     """
     Run full error analysis on the LFW 6,000-pair evaluation set.
 
@@ -114,16 +119,17 @@ def run_error_analysis(checkpoint=None, loss_type=None, variant=None, max_cases=
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if checkpoint is None:
-        checkpoint, loss_type, variant = load_best_model_from_metrics()
+        checkpoint, loss_type, _ = load_best_model_from_metrics()  # variant read from config below
     else:
         checkpoint = Path(checkpoint)
-        if loss_type is None or variant is None:
-            loss_type, variant = _infer_model_info(checkpoint)
+        if loss_type is None:
+            loss_type = _infer_loss_type(checkpoint.stem)
 
     config_path = PROJECT_ROOT / "configs" / f"{checkpoint.stem}.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
+    variant = config["variant"]
     test_pairs = load_lfw_test_pairs()
     eval_dataset = VerificationPairsDataset(
         pair_entries=test_pairs,
@@ -132,8 +138,8 @@ def run_error_analysis(checkpoint=None, loss_type=None, variant=None, max_cases=
     )
     eval_loader = DataLoader(eval_dataset, batch_size=32, shuffle=False)
 
-    model, use_siamese = build_model(variant, loss_type, device, config)
-    model.load_state_dict(torch.load(checkpoint, map_location=device))
+    model, use_siamese = build_model(loss_type, device, config)
+    model.load_state_dict(torch.load(checkpoint, map_location=device), strict=False)
 
     if use_siamese:
         scores, labels = extract_pair_similarities(model, eval_loader, device)
@@ -179,3 +185,4 @@ if __name__ == "__main__":
     parser.add_argument("--max-cases", type=int, default=10, help="Max cases per error type to visualize.")
     args = parser.parse_args()
     run_error_analysis(checkpoint=Path(args.checkpoint) if args.checkpoint else None, max_cases=args.max_cases)
+
